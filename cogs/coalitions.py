@@ -20,6 +20,10 @@ BLOC_CHOICES = [
 
 
 async def is_dnr_protected(bot, guild_id: int, alliance_id: int) -> bool:
+    # Never raidable: our own allies, manually-flagged DNR alliances,
+    # or anyone in the auto-computed top-X by score.
+    if await database.is_alliance_in_bloc(guild_id, alliance_id, "ALLIES"):
+        return True
     if await database.is_alliance_in_bloc(guild_id, alliance_id, "DNR"):
         return True
 
