@@ -92,11 +92,26 @@ def build_nation_embed(nation: dict, off_count: int = 0, def_count: int = 0) -> 
     if nation.get("beige_turns", 0) > 0:
         status_parts.append(f"🔶 Beige ({nation['beige_turns']} turns)")
 
+    # naval_blockade is an ID pointing to WHICHEVER side currently holds
+    # the blockade — not a simple yes/no flag. It can be either party in
+    # either an offensive or defensive war. We only want to surface it
+    # when the ENEMY holds it over this nation, not the reverse.
     blockading_nations = []
-    for war in (nation.get("defensive_wars") or []):
-        if war.get("naval_blockade") and (war.get("turns_left") or 0) > 0:
-            attacker = war.get("attacker") or {"id": war.get("att_id")}
-            blockading_nations.append(attacker)
+    all_wars = [
+        (war, war.get("defender") or {"id": war.get("def_id")})
+        for war in (nation.get("offensive_wars") or [])
+    ] + [
+        (war, war.get("attacker") or {"id": war.get("att_id")})
+        for war in (nation.get("defensive_wars") or [])
+    ]
+    for war, enemy in all_wars:
+        blockade_holder_id = war.get("naval_blockade")
+        if (
+            blockade_holder_id
+            and (war.get("turns_left") or 0) > 0
+            and str(blockade_holder_id) == str(enemy.get("id"))
+        ):
+            blockading_nations.append(enemy)
     if blockading_nations:
         links = ", ".join(
             f"[{b.get('nation_name', 'Unknown')}](https://politicsandwar.com/nation/id={b.get('id')})"

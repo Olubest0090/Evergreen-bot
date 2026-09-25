@@ -61,13 +61,21 @@ class PWApiClient:
               advanced_pirate_economy
               domestic_policy
               war_policy
-              offensive_wars { id turns_left }
+              offensive_wars {
+                id
+                turns_left
+                naval_blockade
+                att_id
+                def_id
+                defender { id nation_name }
+              }
               defensive_wars {
                 id
                 turns_left
                 naval_blockade
                 att_id
-                attacker { id nation_name ships }
+                def_id
+                attacker { id nation_name }
               }
             }
           }
