@@ -92,15 +92,17 @@ def build_nation_embed(nation: dict, off_count: int = 0, def_count: int = 0) -> 
     if nation.get("beige_turns", 0) > 0:
         status_parts.append(f"🔶 Beige ({nation['beige_turns']} turns)")
 
-    blockading_nation = None
+    blockading_nations = []
     for war in (nation.get("defensive_wars") or []):
         if war.get("naval_blockade") and (war.get("turns_left") or 0) > 0:
-            blockading_nation = war.get("attacker") or {"id": war.get("att_id")}
-            break
-    if blockading_nation:
-        b_id = blockading_nation.get("id")
-        b_name = blockading_nation.get("nation_name", "Unknown")
-        status_parts.append(f"🚫 Blockaded by [{b_name}](https://politicsandwar.com/nation/id={b_id})")
+            attacker = war.get("attacker") or {"id": war.get("att_id")}
+            blockading_nations.append(attacker)
+    if blockading_nations:
+        links = ", ".join(
+            f"[{b.get('nation_name', 'Unknown')}](https://politicsandwar.com/nation/id={b.get('id')})"
+            for b in blockading_nations
+        )
+        status_parts.append(f"🚫 Blockaded by {links}")
 
     status = " · ".join(status_parts) if status_parts else "✅ Active"
 
