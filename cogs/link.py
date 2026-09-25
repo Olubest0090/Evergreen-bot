@@ -31,12 +31,21 @@ async def resolve_nation(pw_client, nation_input: str) -> dict | None:
 
 
 async def user_can_link_others(bot: commands.Bot, interaction: discord.Interaction) -> bool:
-    if interaction.user.guild_permissions.administrator:
+    # interaction.permissions is computed server-side by Discord and sent
+    # directly in the interaction payload — it never depends on the bot's
+    # local member/role cache, unlike interaction.user.guild_permissions,
+    # which can crash in larger servers with incomplete role caching.
+    if interaction.permissions.administrator:
         return True
+
     ma_role_id = await database.get_guild_role(interaction.guild_id, "MA")
-    if ma_role_id and any(role.id == ma_role_id for role in interaction.user.roles):
-        return True
-    return False
+    if not ma_role_id:
+        return False
+
+    try:
+        return any(role.id == ma_role_id for role in interaction.user.roles)
+    except AttributeError:
+        return False
 
 
 class Link(commands.Cog):
