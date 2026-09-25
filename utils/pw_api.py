@@ -193,11 +193,11 @@ class PWApiClient:
               def_points
               naval_blockade
               attacker {
-                id nation_name alliance_position alliance { name }
+                id nation_name alliance_id alliance_position alliance { name }
                 last_active soldiers tanks aircraft ships spies
               }
               defender {
-                id nation_name alliance_position alliance { name }
+                id nation_name alliance_id alliance_position alliance { name }
                 last_active soldiers tanks aircraft ships spies
               }
         """
