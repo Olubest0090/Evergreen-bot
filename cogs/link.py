@@ -332,7 +332,10 @@ class Link(commands.Cog):
             except Exception:
                 not_found.append(f"{nation['nation_name']} (`{discord_tag}`) — save failed")
 
-        lines = [f"**Linked:** {len(linked)} | **No Discord set on nation:** {len(skipped_no_discord)} | **Not found in server:** {len(not_found)}"]
+        lines = [
+            f"**Searched {len(guild_members)} server members** against {len(members)} alliance nations.\n"
+            f"**Linked:** {len(linked)} | **No Discord set on nation:** {len(skipped_no_discord)} | **Not found in server:** {len(not_found)}"
+        ]
 
         if linked:
             lines.append("\n**Linked:**\n" + "\n".join(linked[:20]))
