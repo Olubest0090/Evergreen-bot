@@ -146,6 +146,26 @@ class PWApiClient:
         alliances = data["alliances"]["data"]
         return alliances[0]["nations"] if alliances else []
 
+    async def get_nations_in_score_range(self, min_score: float, max_score: float) -> list[dict]:
+        """Used for espionage suspect lists — finds nations whose score
+        falls within a given defensive spy range."""
+        query = """
+        query($min: Float, $max: Float) {
+          nations(min_score: $min, max_score: $max, first: 500, vmode: false) {
+            data {
+              id
+              nation_name
+              alliance_id
+              alliance { name }
+              last_active
+              score
+            }
+          }
+        }
+        """
+        data = await self._query(query, {"min": min_score, "max": max_score})
+        return data["nations"]["data"]
+
     async def get_active_wars(self, alliance_id: int) -> list[dict]:
         query = """
         query($id: [Int]) {

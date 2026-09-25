@@ -167,7 +167,7 @@ class Alerts(commands.Cog):
             await self._handle_war(guild_id, config, alliance_id, war, member_positions)
 
         await asyncio.gather(*[
-            self._handle_espionage_check(guild_id, config, member)
+            self._handle_espionage_check(guild_id, config, member, alliance_id)
             for member in members
         ], return_exceptions=True)
 
@@ -238,7 +238,7 @@ class Alerts(commands.Cog):
         content = " ".join(pings) if pings else None
         await channel.send(content=content, embed=embed)
 
-    async def _handle_espionage_check(self, guild_id, config, member):
+    async def _handle_espionage_check(self, guild_id, config, member, our_alliance_id):
         channel_id = config.get("espionage_channel_id")
         if not channel_id:
             return
@@ -252,11 +252,53 @@ class Alerts(commands.Cog):
             if channel:
                 discord_id = await database.get_discord_id_for_nation(nation_id)
                 ping = f"<@{discord_id}> " if discord_id else ""
+
+                score = member.get("score", 0)
+                # Defensive spy range: score/2.5 to score*2.5 — anyone
+                # in this range could have spied this nation.
+                min_score, max_score = score / 2.5, score * 2.5
+
+                suspects_text = "Couldn't determine suspects."
+                try:
+                    candidates = await self.bot.pw_client.get_nations_in_score_range(min_score, max_score)
+                    now = datetime.now(timezone.utc)
+                    suspects = []
+                    for c in candidates:
+                        if c.get("alliance_id") == our_alliance_id:
+                            continue  # skip our own alliance mates
+                        last_active_raw = c.get("last_active")
+                        if not last_active_raw:
+                            continue
+                        try:
+                            last_active = datetime.fromisoformat(last_active_raw.replace("Z", "+00:00"))
+                        except Exception:
+                            continue
+                        # "Online at the time" — active within the last
+                        # 15 minutes, matching roughly the poll cadence
+                        # plus buffer for API/timezone slack.
+                        if (now - last_active).total_seconds() <= 900:
+                            suspects.append(c)
+
+                    if suspects:
+                        lines = [
+                            f"[{s['nation_name']}](https://politicsandwar.com/nation/id={s['id']}) "
+                            f"— *{(s.get('alliance') or {}).get('name', 'None')}*"
+                            for s in suspects[:15]
+                        ]
+                        suspects_text = "\n".join(lines)
+                        if len(suspects) > 15:
+                            suspects_text += f"\n*+{len(suspects) - 15} more*"
+                    else:
+                        suspects_text = "No recently-active nations found in range."
+                except Exception as e:
+                    suspects_text = f"Error looking up suspects: `{e}`"
+
                 embed = embeds.warning(
                     "🕵️ Possible Espionage Loss",
                     f"**{member.get('nation_name', 'Unknown')}** lost spies: "
                     f"{last_spies} → {current_spies}.\n"
-                    f"This may indicate a successful enemy spy operation.",
+                    f"This may indicate a successful enemy spy operation.\n\n"
+                    f"**Possible suspects** (in defensive spy range, active in last 15 min):\n{suspects_text}",
                 )
                 await channel.send(content=ping or None, embed=embed)
 
