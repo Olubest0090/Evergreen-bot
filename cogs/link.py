@@ -1,11 +1,10 @@
 """
 /link — connects a Discord member to their Politics & War nation.
-Accepts a nation ID, a full nation URL, or an exact nation name.
-Anyone can link themselves; linking someone else requires
-Administrator or the registered MA role.
+/whois — shows a full nation profile card for a linked member.
 """
 
 import re
+from datetime import datetime, timezone
 
 import discord
 from discord import app_commands
@@ -31,10 +30,6 @@ async def resolve_nation(pw_client, nation_input: str) -> dict | None:
 
 
 async def user_can_link_others(bot: commands.Bot, interaction: discord.Interaction) -> bool:
-    # interaction.permissions is computed server-side by Discord and sent
-    # directly in the interaction payload — it never depends on the bot's
-    # local member/role cache, unlike interaction.user.guild_permissions,
-    # which can crash in larger servers with incomplete role caching.
     if interaction.permissions.administrator:
         return True
 
@@ -46,6 +41,71 @@ async def user_can_link_others(bot: commands.Bot, interaction: discord.Interacti
         return any(role.id == ma_role_id for role in interaction.user.roles)
     except AttributeError:
         return False
+
+
+def format_duration(last_active_iso: str | None) -> str:
+    if not last_active_iso:
+        return "unknown"
+    try:
+        last = datetime.fromisoformat(last_active_iso.replace("Z", "+00:00"))
+        delta = datetime.now(timezone.utc) - last
+        days, rem = divmod(int(delta.total_seconds()), 86400)
+        hours, rem = divmod(rem, 3600)
+        minutes = rem // 60
+        if days:
+            return f"{days}d {hours}h ago"
+        if hours:
+            return f"{hours}h {minutes}m ago"
+        return f"{minutes}m ago"
+    except Exception:
+        return "unknown"
+
+
+def build_nation_embed(nation: dict) -> discord.Embed:
+    nation_id = nation["id"]
+    name = nation.get("nation_name", "Unknown")
+    leader = nation.get("leader_name", "Unknown")
+    score = nation.get("score", 0)
+    color = (nation.get("color") or "None").title()
+    alliance = nation.get("alliance") or {}
+    alliance_name = alliance.get("name", "None")
+    position = (nation.get("alliance_position") or "None").title()
+    num_cities = len(nation.get("cities") or [])
+
+    off_count = len(nation.get("offensive_wars") or [])
+    def_count = len(nation.get("defensive_wars") or [])
+
+    status_parts = []
+    if nation.get("vacation_mode_turns", 0) > 0:
+        status_parts.append(f"🌴 Vacation ({nation['vacation_mode_turns']} turns)")
+    if nation.get("beige_turns", 0) > 0:
+        status_parts.append(f"🔶 Beige ({nation['beige_turns']} turns)")
+    status = " · ".join(status_parts) if status_parts else "✅ Active"
+
+    war_att_low, war_att_high = score * 0.75, score * 2.5
+    war_def_low, war_def_high = score / 2.5, score / 0.75
+    spy_low, spy_high = score / 2.5, score * 2.5
+
+    embed = embeds.info(name)
+    embed.url = f"https://politicsandwar.com/nation/id={nation_id}"
+    embed.description = (
+        f"**Leader:** {leader}\n"
+        f"**Alliance:** {alliance_name} ({position})\n"
+        f"**Color Bloc:** {color}\n"
+        f"**Cities:** {num_cities} | **Score:** {score:,.2f}\n"
+        f"**War Slots:** Offense {off_count}/5 · Defense {def_count}/3\n"
+        f"**Last Active:** {format_duration(nation.get('last_active'))}\n"
+        f"**Status:** {status}\n\n"
+        f"**Military**\n"
+        f"`{nation.get('soldiers', 0):,} 💂 | {nation.get('tanks', 0):,} ⚙️ | "
+        f"{nation.get('aircraft', 0):,} ✈️ | {nation.get('ships', 0):,} 🚢 | "
+        f"{nation.get('missiles', 0)} 🚀 | {nation.get('nukes', 0)} ☢️ | "
+        f"{nation.get('spies', 0):,} 🔍`\n\n"
+        f"**War Range (Attack):** {war_att_low:,.2f} – {war_att_high:,.2f}\n"
+        f"**War Range (Defense):** {war_def_low:,.2f} – {war_def_high:,.2f}\n"
+        f"**Spy Range:** {spy_low:,.2f} – {spy_high:,.2f}"
+    )
+    return embed
 
 
 class Link(commands.Cog):
@@ -127,7 +187,7 @@ class Link(commands.Cog):
             embed=embeds.success("Unlinked", f"{target.mention}'s nation link has been removed.")
         )
 
-    @app_commands.command(name="whois", description="Show which nation a member is linked to")
+    @app_commands.command(name="whois", description="Show a full nation profile for a member")
     @app_commands.describe(member="The member to look up")
     async def whois(self, interaction: discord.Interaction, member: discord.Member):
         await interaction.response.defer()
@@ -140,13 +200,19 @@ class Link(commands.Cog):
 
         try:
             nation = await self.bot.pw_client.get_nation(nation_id)
-        except Exception:
-            nation = None
+        except Exception as e:
+            await interaction.followup.send(
+                embed=embeds.error("Lookup Failed", f"Error contacting the P&W API: `{e}`")
+            )
+            return
 
-        name = nation["nation_name"] if nation else f"ID {nation_id} (nation data unavailable)"
-        await interaction.followup.send(
-            embed=embeds.info("Linked Nation", f"{member.mention} is linked to **{name}**.")
-        )
+        if not nation:
+            await interaction.followup.send(
+                embed=embeds.error("Nation Not Found", f"Linked nation ID `{nation_id}` no longer exists.")
+            )
+            return
+
+        await interaction.followup.send(embed=build_nation_embed(nation))
 
 
 async def setup(bot: commands.Bot):

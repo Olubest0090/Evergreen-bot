@@ -42,17 +42,23 @@ class PWApiClient:
               nation_name
               leader_name
               score
+              color
               alliance_id
-              alliance { name }
+              alliance_position
+              alliance { id name }
               cities { id, infrastructure }
               soldiers
               tanks
               aircraft
               ships
+              missiles
+              nukes
               spies
               vacation_mode_turns
               beige_turns
               last_active
+              offensive_wars { id }
+              defensive_wars { id }
             }
           }
         }
