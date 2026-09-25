@@ -2,11 +2,16 @@
 /bloc — manage coalitions (DNR, DNR_MEMBERS, ENEMIES, ALLIES, EXTENSION)
 /fa — Foreign Affairs settings, currently the DNR top-X threshold
 /war checkdnr — check if a nation is protected under DNR
+
+Also runs a background loop that auto-syncs the ALLIES bloc from
+Evergreen's actual in-game treaties, adding new allies and removing
+ones whose treaty was cancelled — without touching anything a human
+added manually via /bloc add (tracked via the auto_synced flag).
 """
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from utils import database, embeds
 
@@ -18,14 +23,13 @@ BLOC_CHOICES = [
     app_commands.Choice(name="Extension", value="EXTENSION"),
 ]
 
+TREATY_SYNC_INTERVAL_SECONDS = 600
+
 
 async def is_dnr_protected(bot, guild_id: int, alliance_id: int) -> bool:
     # Never raidable: our own allies, their known extension/offshore
     # alliances, manually-flagged DNR alliances, or anyone in the
-    # auto-computed top-X by score. P&W's API doesn't expose which
-    # alliances are whose extension/offshore, so those get added
-    # manually to the EXTENSION bloc via /bloc add and are protected
-    # the same as a direct ally.
+    # auto-computed top-X by score.
     for bloc_type in ("ALLIES", "EXTENSION", "DNR"):
         if await database.is_alliance_in_bloc(guild_id, alliance_id, bloc_type):
             return True
@@ -41,6 +45,10 @@ async def is_dnr_protected(bot, guild_id: int, alliance_id: int) -> bool:
 class Coalitions(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.sync_treaties.start()
+
+    def cog_unload(self):
+        self.sync_treaties.cancel()
 
     bloc_group = app_commands.Group(
         name="bloc",
@@ -68,8 +76,10 @@ class Coalitions(commands.Cog):
             await interaction.followup.send(embed=embeds.error("Alliance Not Found", f"No alliance matching `{alliance}`."))
             return
 
+        # Manual additions are never auto_synced, so the treaty sync
+        # loop will never remove them even if no treaty exists.
         await database.add_coalition_alliance(
-            interaction.guild_id, alliance_data["id"], alliance_data["name"], bloc.value
+            interaction.guild_id, alliance_data["id"], alliance_data["name"], bloc.value, auto_synced=False
         )
         await interaction.followup.send(
             embed=embeds.success(
@@ -110,7 +120,10 @@ class Coalitions(commands.Cog):
 
         grouped: dict[str, list[str]] = {}
         for row in rows:
-            grouped.setdefault(row["bloc_type"], []).append(row["alliance_name"] or str(row["alliance_id"]))
+            tag = " *(auto)*" if row.get("auto_synced") else ""
+            grouped.setdefault(row["bloc_type"], []).append(
+                f"{row['alliance_name'] or row['alliance_id']}{tag}"
+            )
 
         lines = []
         for bloc_type, names in grouped.items():
@@ -126,7 +139,7 @@ class Coalitions(commands.Cog):
             embed=embeds.success(
                 "DNR Threshold Set",
                 f"Top **{do_not_raid_top_x}** alliances (by score) are now protected under DNR, "
-                f"plus any alliances manually added to the DNR bloc.",
+                f"plus any alliances manually added to DNR, Allies, or Extension.",
             )
         )
 
@@ -169,6 +182,41 @@ class Coalitions(commands.Cog):
                     "✅ Allowed", f"**{nation_data['nation_name']}** ({alliance_name}) is not DNR-protected."
                 )
             )
+
+    @tasks.loop(seconds=TREATY_SYNC_INTERVAL_SECONDS)
+    async def sync_treaties(self):
+        try:
+            configs = await database.get_all_alerts_configs()
+            for config in configs:
+                alliance_id = config.get("alliance_id")
+                if not alliance_id:
+                    continue
+                await self._sync_guild_treaties(config["guild_id"], alliance_id)
+        except Exception as e:
+            print(f"[coalitions] treaty sync error: {e}")
+
+    @sync_treaties.before_loop
+    async def before_sync(self):
+        await self.bot.wait_until_ready()
+
+    async def _sync_guild_treaties(self, guild_id: int, alliance_id: int):
+        treaties = await self.bot.pw_client.get_alliance_treaties(alliance_id)
+        current_ally_ids = {t["other_alliance_id"] for t in treaties}
+
+        # Add any new treaty partners not already in ALLIES.
+        for t in treaties:
+            already_present = await database.is_alliance_in_bloc(guild_id, t["other_alliance_id"], "ALLIES")
+            if not already_present:
+                await database.add_coalition_alliance(
+                    guild_id, t["other_alliance_id"], t["other_alliance_name"], "ALLIES", auto_synced=True
+                )
+
+        # Remove only auto-synced ALLIES entries whose treaty no longer
+        # exists — manual entries (auto_synced=False) are left alone.
+        existing = await database.list_coalitions(guild_id, "ALLIES")
+        for row in existing:
+            if row.get("auto_synced") and row["alliance_id"] not in current_ally_ids:
+                await database.remove_coalition_alliance(guild_id, row["alliance_id"], "ALLIES")
 
 
 async def setup(bot: commands.Bot):

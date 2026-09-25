@@ -12,7 +12,7 @@ _session: aiohttp.ClientSession | None = None
 _base_url: str = ""
 
 
-async def init_client() -> None:
+async def init_client(timeout: aiohttp.ClientTimeout | None = None) -> None:
     global _session, _base_url
     _base_url = os.environ["SUPABASE_URL"].rstrip("/")
     service_key = os.environ["SUPABASE_SERVICE_KEY"]
@@ -21,7 +21,8 @@ async def init_client() -> None:
             "apikey": service_key,
             "Authorization": f"Bearer {service_key}",
             "Content-Type": "application/json",
-        }
+        },
+        timeout=timeout or aiohttp.ClientTimeout(total=15),
     )
 
 
@@ -163,6 +164,7 @@ async def set_last_spies(nation_id: int, spies: int) -> None:
         if resp.status not in (200, 201, 204):
             raise RuntimeError(f"Supabase error {resp.status}: {await resp.text()}")
 
+
 # ---- dnr_settings (Phase 3) ----
 
 async def set_dnr_top_x(guild_id: int, top_x: int) -> None:
@@ -184,13 +186,16 @@ async def get_dnr_top_x(guild_id: int) -> int:
 
 # ---- coalitions (Phase 3) ----
 
-async def add_coalition_alliance(guild_id: int, alliance_id: int, alliance_name: str, bloc_type: str) -> None:
+async def add_coalition_alliance(
+    guild_id: int, alliance_id: int, alliance_name: str, bloc_type: str, auto_synced: bool = False
+) -> None:
     url = f"{_base_url}/rest/v1/coalitions?on_conflict=guild_id,alliance_id,bloc_type"
     payload = {
         "guild_id": guild_id,
         "alliance_id": alliance_id,
         "alliance_name": alliance_name,
         "bloc_type": bloc_type,
+        "auto_synced": auto_synced,
     }
     headers = {"Prefer": "resolution=merge-duplicates,return=minimal"}
     async with _session.post(url, json=payload, headers=headers) as resp:

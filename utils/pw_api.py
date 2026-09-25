@@ -4,9 +4,8 @@ Thin wrapper around the Politics & War v3 GraphQL API.
 NOTE ON FIELD NAMES: if the API rejects a query, the GraphQL error
 message will name the exact bad field — check it against the live
 schema at https://api.politicsandwar.com/graphql-docs and adjust the
-query string here accordingly. War-level fields like att_resistance /
-att_points are a best-effort guess at the v3 schema; if get_active_wars
-errors, these are the most likely culprits to rename/remove.
+query string here accordingly. Fields marked "best guess" below have
+not been verified against the live schema.
 """
 
 import os
@@ -62,20 +61,12 @@ class PWApiClient:
               domestic_policy
               war_policy
               offensive_wars {
-                id
-                turns_left
-                naval_blockade
-                att_id
-                def_id
-                defender { id nation_name }
+                id turns_left naval_blockade att_id def_id
+                defender { id nation_name alliance_id }
               }
               defensive_wars {
-                id
-                turns_left
-                naval_blockade
-                att_id
-                def_id
-                attacker { id nation_name }
+                id turns_left naval_blockade att_id def_id
+                attacker { id nation_name alliance_id }
               }
             }
           }
@@ -84,21 +75,6 @@ class PWApiClient:
         data = await self._query(query, {"id": [nation_id]})
         nations = data["nations"]["data"]
         return nations[0] if nations else None
-
-    async def get_active_war_counts(self, nation_id: int) -> tuple[int, int]:
-        """Returns (offensive_count, defensive_count) for CURRENTLY ACTIVE
-        wars only, by fetching the nation's full war relation lists and
-        filtering client-side to turns_left > 0 — the wars(nation_id:...)
-        filter is not a valid query argument on the live schema, it
-        silently returns zero results instead of erroring."""
-        nation = await self.get_nation(nation_id)
-        if not nation:
-            return 0, 0
-        off_wars = nation.get("offensive_wars") or []
-        def_wars = nation.get("defensive_wars") or []
-        off_count = sum(1 for w in off_wars if (w.get("turns_left") or 0) > 0)
-        def_count = sum(1 for w in def_wars if (w.get("turns_left") or 0) > 0)
-        return off_count, def_count
 
     async def get_nation_by_name(self, nation_name: str) -> dict | None:
         query = """
@@ -147,26 +123,6 @@ class PWApiClient:
         alliances = data["alliances"]["data"]
         return alliances[0]["nations"] if alliances else []
 
-    async def get_nations_in_score_range(self, min_score: float, max_score: float) -> list[dict]:
-        """Used for espionage suspect lists — finds nations whose score
-        falls within a given defensive spy range."""
-        query = """
-        query($min: Float, $max: Float) {
-          nations(min_score: $min, max_score: $max, first: 500, vmode: false) {
-            data {
-              id
-              nation_name
-              alliance_id
-              alliance { name }
-              last_active
-              score
-            }
-          }
-        }
-        """
-        data = await self._query(query, {"min": min_score, "max": max_score})
-        return data["nations"]["data"]
-
     async def get_alliance_by_id_or_name(self, text: str) -> dict | None:
         text = text.strip()
         if text.isdigit():
@@ -188,8 +144,7 @@ class PWApiClient:
 
     async def get_top_alliances(self, limit: int) -> list[dict]:
         """Top alliances by score, used for the DNR top-X threshold.
-        NOTE: orderBy syntax is a best guess at the live schema — if this
-        errors, the message will show the correct argument shape."""
+        NOTE: orderBy syntax is a best guess at the live schema."""
         query = """
         query($limit: Int) {
           alliances(first: $limit, orderBy: [{column: SCORE, order: DESC}]) {
@@ -200,19 +155,78 @@ class PWApiClient:
         data = await self._query(query, {"limit": limit})
         return data["alliances"]["data"]
 
+    async def get_alliance_treaties(self, alliance_id: int) -> list[dict]:
+        """Returns this alliance's active treaties, each tagged with
+        the OTHER alliance's id/name regardless of which side of the
+        treaty record our alliance sits on.
+        NOTE: treaty field names (treaty_type, alliance1/alliance2,
+        turns_left) are a best guess — unverified against the live
+        schema. If this errors, the message will show the real names."""
+        query = """
+        query($id: [Int]) {
+          alliances(id: $id, first: 1) {
+            data {
+              id
+              treaties {
+                id
+                treaty_type
+                turns_left
+                alliance1 { id name }
+                alliance2 { id name }
+              }
+            }
+          }
+        }
+        """
+        data = await self._query(query, {"id": [alliance_id]})
+        alliances = data["alliances"]["data"]
+        if not alliances:
+            return []
+
+        our_id = alliance_id
+        results = []
+        for t in alliances[0].get("treaties") or []:
+            if (t.get("turns_left") or 0) <= 0:
+                continue
+            a1 = t.get("alliance1") or {}
+            a2 = t.get("alliance2") or {}
+            other = a2 if a1.get("id") == our_id else a1
+            if other.get("id"):
+                results.append({
+                    "treaty_type": t.get("treaty_type"),
+                    "other_alliance_id": other["id"],
+                    "other_alliance_name": other.get("name"),
+                })
+        return results
+
+    async def get_nations_in_score_range(self, min_score: float, max_score: float) -> list[dict]:
+        query = """
+        query($min: Float, $max: Float) {
+          nations(min_score: $min, max_score: $max, first: 500, vmode: false) {
+            data {
+              id
+              nation_name
+              alliance_id
+              alliance { name }
+              last_active
+              score
+            }
+          }
+        }
+        """
+        data = await self._query(query, {"min": min_score, "max": max_score})
+        return data["nations"]["data"]
+
     async def get_active_wars(self, alliance_id: int) -> list[dict]:
         """
         IMPORTANT: the wars(alliance_id: ...) filter argument does NOT
-        actually filter by alliance on the live API — it silently
-        returns unrelated wars instead of erroring. Confirmed by direct
-        testing: 23 wars returned, 0 matched our alliance_id on either
-        side. Do not reintroduce that query.
+        actually filter by alliance on the live API — confirmed by direct
+        testing (returned unrelated wars). Do not reintroduce that query.
 
         Instead, this pulls each member nation's own offensive_wars /
         defensive_wars relation lists (confirmed reliable via /whois)
-        directly nested inside the alliance query, and tags each war
-        with which side our member is on based on which list it came
-        from — no att_alliance_id/def_alliance_id comparison needed.
+        nested inside the alliance query, tagging each war with which
+        side our member is on.
         """
         war_fields = """
               id
