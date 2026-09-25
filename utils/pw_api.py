@@ -59,8 +59,16 @@ class PWApiClient:
               last_active
               pirate_economy
               advanced_pirate_economy
+              domestic_policy
+              war_policy
               offensive_wars { id turns_left }
-              defensive_wars { id turns_left }
+              defensive_wars {
+                id
+                turns_left
+                naval_blockade
+                att_id
+                attacker { id nation_name }
+              }
             }
           }
         }

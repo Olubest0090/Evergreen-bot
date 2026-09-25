@@ -83,11 +83,25 @@ def build_nation_embed(nation: dict, off_count: int = 0, def_count: int = 0) -> 
         max_off = 5
     max_def = 3
 
+    domestic_policy = (nation.get("domestic_policy") or "None").replace("_", " ").title()
+    war_policy = (nation.get("war_policy") or "None").replace("_", " ").title()
+
     status_parts = []
     if nation.get("vacation_mode_turns", 0) > 0:
         status_parts.append(f"🌴 Vacation ({nation['vacation_mode_turns']} turns)")
     if nation.get("beige_turns", 0) > 0:
         status_parts.append(f"🔶 Beige ({nation['beige_turns']} turns)")
+
+    blockading_nation = None
+    for war in (nation.get("defensive_wars") or []):
+        if war.get("naval_blockade") and (war.get("turns_left") or 0) > 0:
+            blockading_nation = war.get("attacker") or {"id": war.get("att_id")}
+            break
+    if blockading_nation:
+        b_id = blockading_nation.get("id")
+        b_name = blockading_nation.get("nation_name", "Unknown")
+        status_parts.append(f"🚫 Blockaded by [{b_name}](https://politicsandwar.com/nation/id={b_id})")
+
     status = " · ".join(status_parts) if status_parts else "✅ Active"
 
     war_att_low, war_att_high = score * 0.75, score * 2.5
@@ -100,6 +114,7 @@ def build_nation_embed(nation: dict, off_count: int = 0, def_count: int = 0) -> 
         f"**Leader:** {leader}\n"
         f"**Alliance:** {alliance_name} ({position})\n"
         f"**Color Bloc:** {color}\n"
+        f"**Domestic Policy:** {domestic_policy} | **War Policy:** {war_policy}\n"
         f"**Cities:** {num_cities} | **Score:** {score:,.2f}\n"
         f"**War Slots:** Offense {off_count}/{max_off} · Defense {def_count}/{max_def}\n"
         f"**Last Active:** {format_duration(nation.get('last_active'))}\n"
