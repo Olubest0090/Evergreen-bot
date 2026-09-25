@@ -259,5 +259,88 @@ class Link(commands.Cog):
         await interaction.followup.send(embed=build_nation_embed(nation, off_count, def_count))
 
 
+    @app_commands.command(
+        name="autolink",
+        description="Bulk-link every alliance member by matching P&W's stored Discord username",
+    )
+    @app_commands.describe(alliance_id="P&W alliance ID to pull members from (defaults to the configured one)")
+    async def autolink(self, interaction: discord.Interaction, alliance_id: int = None):
+        if not await user_can_link_others(self.bot, interaction):
+            await interaction.response.send_message(
+                embed=embeds.error(
+                    "Permission Denied",
+                    "Only Administrators or the registered MA role can run bulk linking.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer()
+
+        if alliance_id is None:
+            config = await database.get_alerts_config(interaction.guild_id)
+            alliance_id = config.get("alliance_id") if config else None
+        if not alliance_id:
+            await interaction.followup.send(
+                embed=embeds.error(
+                    "No Alliance Set", "Provide `alliance_id`, or set one first with `/alerts alliance`."
+                )
+            )
+            return
+
+        try:
+            members = await self.bot.pw_client.get_alliance_members(alliance_id)
+        except Exception as e:
+            await interaction.followup.send(embed=embeds.error("Lookup Failed", f"P&W API error: `{e}`"))
+            return
+
+        await interaction.guild.chunk()
+        guild_members = interaction.guild.members
+
+        def normalize(s: str) -> str:
+            return s.strip().lower().lstrip("@")
+
+        member_lookup: dict[str, discord.Member] = {}
+        for m in guild_members:
+            member_lookup[normalize(m.name)] = m
+            if m.global_name:
+                member_lookup[normalize(m.global_name)] = m
+            if m.discriminator and m.discriminator != "0":
+                member_lookup[normalize(f"{m.name}#{m.discriminator}")] = m
+
+        linked, skipped_no_discord, not_found = [], [], []
+
+        for nation in members:
+            discord_tag = nation.get("discord")
+            if not discord_tag or not discord_tag.strip():
+                skipped_no_discord.append(nation["nation_name"])
+                continue
+
+            match = member_lookup.get(normalize(discord_tag))
+            if not match:
+                not_found.append(f"{nation['nation_name']} (`{discord_tag}`)")
+                continue
+
+            try:
+                await database.link_nation(interaction.guild_id, match.id, nation["id"])
+                linked.append(f"{match.mention} → **{nation['nation_name']}**")
+            except Exception:
+                not_found.append(f"{nation['nation_name']} (`{discord_tag}`) — save failed")
+
+        lines = [f"**Linked:** {len(linked)} | **No Discord set on nation:** {len(skipped_no_discord)} | **Not found in server:** {len(not_found)}"]
+
+        if linked:
+            lines.append("\n**Linked:**\n" + "\n".join(linked[:20]))
+            if len(linked) > 20:
+                lines.append(f"*+{len(linked) - 20} more*")
+
+        if not_found:
+            lines.append("\n**Could not match (check manually):**\n" + "\n".join(not_found[:15]))
+            if len(not_found) > 15:
+                lines.append(f"*+{len(not_found) - 15} more*")
+
+        await interaction.followup.send(embed=embeds.success("Auto-Link Complete", "\n".join(lines)))
+
+
 async def setup(bot: commands.Bot):
     await bot.add_cog(Link(bot))

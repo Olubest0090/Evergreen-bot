@@ -137,6 +137,7 @@ class PWApiClient:
                 aircraft
                 ships
                 spies
+                discord
               }
             }
           }
