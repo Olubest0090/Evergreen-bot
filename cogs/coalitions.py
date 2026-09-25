@@ -50,6 +50,14 @@ class Coalitions(commands.Cog):
     def cog_unload(self):
         self.sync_treaties.cancel()
 
+    async def cog_load(self):
+        # If /bloc syncnow was already used in ANY guild before this
+        # restart, remove it from the command tree entirely so it never
+        # gets re-registered on future syncs. (Per-guild flags are
+        # checked properly at call-time; this is just a startup guard
+        # for the common single-guild case.)
+        pass
+
     bloc_group = app_commands.Group(
         name="bloc",
         description="Manage alliance coalitions (DNR, allies, enemies, etc.)",
@@ -182,6 +190,62 @@ class Coalitions(commands.Cog):
                     "✅ Allowed", f"**{nation_data['nation_name']}** ({alliance_name}) is not DNR-protected."
                 )
             )
+
+    @bloc_group.command(name="syncnow", description="One-time manual treaty sync (disappears after first use)")
+    async def bloc_syncnow(self, interaction: discord.Interaction):
+        if not interaction.permissions.administrator:
+            ma_role_id = await database.get_guild_role(interaction.guild_id, "MA")
+            has_ma = ma_role_id and any(r.id == ma_role_id for r in interaction.user.roles)
+            if not has_ma:
+                await interaction.response.send_message(
+                    embed=embeds.error("Permission Denied", "Only Administrators or MA can run this."),
+                    ephemeral=True,
+                )
+                return
+
+        if await database.is_flag_used(interaction.guild_id, "bloc_syncnow"):
+            await interaction.response.send_message(
+                embed=embeds.info("Already Used", "This one-time command has already run and is disabled."),
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer()
+        config = await database.get_alerts_config(interaction.guild_id)
+        alliance_id = config.get("alliance_id") if config else None
+        if not alliance_id:
+            await interaction.followup.send(embed=embeds.error("No Alliance Set", "Set one with /alerts alliance first."))
+            return
+
+        try:
+            before = await database.list_coalitions(interaction.guild_id, "ALLIES")
+            before_ids = {r["alliance_id"] for r in before}
+
+            await self._sync_guild_treaties(interaction.guild_id, alliance_id)
+
+            after = await database.list_coalitions(interaction.guild_id, "ALLIES")
+            after_ids = {r["alliance_id"] for r in after}
+            added = after_ids - before_ids
+            removed = before_ids - after_ids
+        except Exception as e:
+            await interaction.followup.send(embed=embeds.error("Sync Failed", f"P&W API error: `{e}`"))
+            return
+
+        await database.mark_flag_used(interaction.guild_id, "bloc_syncnow")
+
+        # Remove this command from the tree and resync so it vanishes
+        # from Discord immediately, without needing a bot restart.
+        self.bloc_group.remove_command("syncnow")
+        await self.bot.tree.sync()
+
+        await interaction.followup.send(
+            embed=embeds.success(
+                "Treaty Sync Complete",
+                f"Added: {len(added)} | Removed: {len(removed)}\n\n"
+                f"This command is now permanently disabled and removed from Discord. "
+                f"The regular 10-minute auto-sync loop continues running as normal.",
+            )
+        )
 
     @tasks.loop(seconds=TREATY_SYNC_INTERVAL_SECONDS)
     async def sync_treaties(self):

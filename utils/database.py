@@ -235,3 +235,21 @@ async def is_alliance_in_bloc(guild_id: int, alliance_id: int, bloc_type: str) -
     async with _session.get(url, params=params) as resp:
         data = await resp.json()
         return bool(data)
+
+# ---- bot_flags (one-time command tracking) ----
+
+async def mark_flag_used(guild_id: int, flag_name: str) -> None:
+    url = f"{_base_url}/rest/v1/bot_flags?on_conflict=guild_id,flag_name"
+    payload = {"guild_id": guild_id, "flag_name": flag_name}
+    headers = {"Prefer": "resolution=merge-duplicates,return=minimal"}
+    async with _session.post(url, json=payload, headers=headers) as resp:
+        if resp.status not in (200, 201, 204):
+            raise RuntimeError(f"Supabase error {resp.status}: {await resp.text()}")
+
+
+async def is_flag_used(guild_id: int, flag_name: str) -> bool:
+    url = f"{_base_url}/rest/v1/bot_flags"
+    params = {"guild_id": f"eq.{guild_id}", "flag_name": f"eq.{flag_name}", "select": "flag_name"}
+    async with _session.get(url, params=params) as resp:
+        data = await resp.json()
+        return bool(data)
