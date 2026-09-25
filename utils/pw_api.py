@@ -4,7 +4,9 @@ Thin wrapper around the Politics & War v3 GraphQL API.
 NOTE ON FIELD NAMES: if the API rejects a query, the GraphQL error
 message will name the exact bad field — check it against the live
 schema at https://api.politicsandwar.com/graphql-docs and adjust the
-query string here accordingly.
+query string here accordingly. War-level fields like att_resistance /
+att_points are a best-effort guess at the v3 schema; if get_active_wars
+errors, these are the most likely culprits to rename/remove.
 """
 
 import os
@@ -118,8 +120,34 @@ class PWApiClient:
               def_id
               att_alliance_id
               def_alliance_id
-              attacker { id nation_name alliance_position }
-              defender { id nation_name alliance_position }
+              att_resistance
+              def_resistance
+              att_points
+              def_points
+              attacker {
+                id
+                nation_name
+                alliance_position
+                alliance { name }
+                last_active
+                soldiers
+                tanks
+                aircraft
+                ships
+                spies
+              }
+              defender {
+                id
+                nation_name
+                alliance_position
+                alliance { name }
+                last_active
+                soldiers
+                tanks
+                aircraft
+                ships
+                spies
+              }
             }
           }
         }
