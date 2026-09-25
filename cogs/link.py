@@ -294,8 +294,10 @@ class Link(commands.Cog):
             await interaction.followup.send(embed=embeds.error("Lookup Failed", f"P&W API error: `{e}`"))
             return
 
-        await interaction.guild.chunk()
-        guild_members = interaction.guild.members
+        # Fetch members directly via Discord's REST API rather than
+        # relying on the gateway member cache/chunk() — more reliable
+        # regardless of whatever's causing the cache to under-populate.
+        guild_members = [m async for m in interaction.guild.fetch_members(limit=None)]
 
         def normalize(s: str) -> str:
             # Always strip anything after '#' — modern Discord usernames
