@@ -298,15 +298,20 @@ class Link(commands.Cog):
         guild_members = interaction.guild.members
 
         def normalize(s: str) -> str:
-            return s.strip().lower().lstrip("@")
+            # Always strip anything after '#' — modern Discord usernames
+            # have no discriminator, but P&W profiles may still store an
+            # old-style tag (legacy "name#1234" or the "name#0" that
+            # Discord's own migration left on many old-format profiles).
+            # Comparing bare usernames only avoids both cases silently
+            # failing to match.
+            bare = s.strip().lower().lstrip("@").split("#")[0]
+            return bare
 
         member_lookup: dict[str, discord.Member] = {}
         for m in guild_members:
             member_lookup[normalize(m.name)] = m
             if m.global_name:
                 member_lookup[normalize(m.global_name)] = m
-            if m.discriminator and m.discriminator != "0":
-                member_lookup[normalize(f"{m.name}#{m.discriminator}")] = m
 
         linked, skipped_no_discord, not_found = [], [], []
 
