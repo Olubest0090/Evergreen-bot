@@ -168,49 +168,75 @@ class PWApiClient:
         return data["nations"]["data"]
 
     async def get_active_wars(self, alliance_id: int) -> list[dict]:
-        query = """
-        query($id: [Int]) {
-          wars(alliance_id: $id, active: true, first: 100) {
-            data {
+        """
+        IMPORTANT: the wars(alliance_id: ...) filter argument does NOT
+        actually filter by alliance on the live API — it silently
+        returns unrelated wars instead of erroring. Confirmed by direct
+        testing: 23 wars returned, 0 matched our alliance_id on either
+        side. Do not reintroduce that query.
+
+        Instead, this pulls each member nation's own offensive_wars /
+        defensive_wars relation lists (confirmed reliable via /whois)
+        directly nested inside the alliance query, and tags each war
+        with which side our member is on based on which list it came
+        from — no att_alliance_id/def_alliance_id comparison needed.
+        """
+        war_fields = """
               id
-              date
               war_type
               turns_left
               att_id
               def_id
-              att_alliance_id
-              def_alliance_id
               att_resistance
               def_resistance
               att_points
               def_points
+              naval_blockade
               attacker {
-                id
-                nation_name
-                alliance_position
-                alliance { name }
-                last_active
-                soldiers
-                tanks
-                aircraft
-                ships
-                spies
+                id nation_name alliance_position alliance { name }
+                last_active soldiers tanks aircraft ships spies
               }
               defender {
-                id
-                nation_name
-                alliance_position
-                alliance { name }
-                last_active
-                soldiers
-                tanks
-                aircraft
-                ships
-                spies
+                id nation_name alliance_position alliance { name }
+                last_active soldiers tanks aircraft ships spies
               }
-            }
-          }
-        }
+        """
+        query = f"""
+        query($id: [Int]) {{
+          alliances(id: $id, first: 1) {{
+            data {{
+              id
+              nations {{
+                id
+                alliance_position
+                offensive_wars {{ {war_fields} }}
+                defensive_wars {{ {war_fields} }}
+              }}
+            }}
+          }}
+        }}
         """
         data = await self._query(query, {"id": [alliance_id]})
-        return data["wars"]["data"]
+        alliances = data["alliances"]["data"]
+        if not alliances:
+            return []
+
+        wars = []
+        seen_ids = set()
+        for nation in alliances[0]["nations"]:
+            position = nation.get("alliance_position")
+            for war in (nation.get("offensive_wars") or []):
+                if (war.get("turns_left") or 0) <= 0 or war["id"] in seen_ids:
+                    continue
+                seen_ids.add(war["id"])
+                war["_side"] = "offense"
+                war["_our_position"] = position
+                wars.append(war)
+            for war in (nation.get("defensive_wars") or []):
+                if (war.get("turns_left") or 0) <= 0 or war["id"] in seen_ids:
+                    continue
+                seen_ids.add(war["id"])
+                war["_side"] = "defense"
+                war["_our_position"] = position
+                wars.append(war)
+        return wars

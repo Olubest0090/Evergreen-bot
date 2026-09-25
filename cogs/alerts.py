@@ -140,19 +140,17 @@ class Alerts(commands.Cog):
                 return
 
             wars = await self.bot.pw_client.get_active_wars(alliance_id)
-            defense_count = sum(1 for w in wars if w.get("def_alliance_id") == alliance_id)
-            offense_count = sum(1 for w in wars if w.get("att_alliance_id") == alliance_id)
-            neither_count = len(wars) - defense_count - offense_count
+            defense_count = sum(1 for w in wars if w.get("_side") == "defense")
+            offense_count = sum(1 for w in wars if w.get("_side") == "offense")
 
             await self._poll_guild(interaction.guild_id, config)
 
             await interaction.followup.send(
                 embed=embeds.success(
                     "Refreshed",
-                    f"API returned **{len(wars)}** total active wars for alliance `{alliance_id}`.\n"
-                    f"Classified as defense (our side is defender): **{defense_count}**\n"
-                    f"Classified as offense (our side is attacker): **{offense_count}**\n"
-                    f"Matched neither side: **{neither_count}**",
+                    f"Found **{len(wars)}** active wars for alliance `{alliance_id}`.\n"
+                    f"Defense (our member is defender): **{defense_count}**\n"
+                    f"Offense (our member is attacker): **{offense_count}**",
                 )
             )
         except Exception as e:
@@ -184,21 +182,19 @@ class Alerts(commands.Cog):
 
         wars = await pw_client.get_active_wars(alliance_id)
         for war in wars:
-            await self._handle_war(guild_id, config, alliance_id, war, member_positions)
+            await self._handle_war(guild_id, config, war)
 
         await asyncio.gather(*[
             self._handle_espionage_check(guild_id, config, member, alliance_id)
             for member in members
         ], return_exceptions=True)
 
-    async def _handle_war(self, guild_id, config, alliance_id, war, member_positions):
+    async def _handle_war(self, guild_id, config, war):
         war_id = war["id"]
-        is_defense = war.get("def_alliance_id") == alliance_id
-        is_offense = war.get("att_alliance_id") == alliance_id
+        side = war.get("_side")
+        position = war.get("_our_position") or "APPLICANT"
 
-        if is_defense:
-            defender = war.get("defender") or {}
-            position = member_positions.get(defender.get("id"), "APPLICANT")
+        if side == "defense":
             if position == "APPLICANT":
                 return
             if await database.is_war_alerted(war_id, "alerted_defense"):
@@ -209,7 +205,7 @@ class Alerts(commands.Cog):
             await self._send_war_alert(guild_id, channel_id, war, side="defense")
             await database.mark_war_alerted(war_id, "alerted_defense")
 
-        elif is_offense:
+        elif side == "offense":
             if await database.is_war_alerted(war_id, "alerted_offensive"):
                 return
             channel_id = config.get("offensive_channel_id")
