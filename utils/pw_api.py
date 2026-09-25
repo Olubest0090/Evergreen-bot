@@ -59,6 +59,8 @@ class PWApiClient:
               last_active
               pirate_economy
               advanced_pirate_economy
+              offensive_wars { id turns_left }
+              defensive_wars { id turns_left }
             }
           }
         }
@@ -69,24 +71,17 @@ class PWApiClient:
 
     async def get_active_war_counts(self, nation_id: int) -> tuple[int, int]:
         """Returns (offensive_count, defensive_count) for CURRENTLY ACTIVE
-        wars only — counting all-time wars would wildly overcount, since
-        the game caps active slots at 5 offense / 3 defense (more with
-        pirate economy projects) but nations fight far more wars over
-        their lifetime."""
-        query = """
-        query($id: [Int]) {
-          wars(nation_id: $id, active: true, first: 50) {
-            data {
-              att_id
-              def_id
-            }
-          }
-        }
-        """
-        data = await self._query(query, {"id": [nation_id]})
-        wars = data["wars"]["data"]
-        off_count = sum(1 for w in wars if w.get("att_id") == nation_id)
-        def_count = sum(1 for w in wars if w.get("def_id") == nation_id)
+        wars only, by fetching the nation's full war relation lists and
+        filtering client-side to turns_left > 0 — the wars(nation_id:...)
+        filter is not a valid query argument on the live schema, it
+        silently returns zero results instead of erroring."""
+        nation = await self.get_nation(nation_id)
+        if not nation:
+            return 0, 0
+        off_wars = nation.get("offensive_wars") or []
+        def_wars = nation.get("defensive_wars") or []
+        off_count = sum(1 for w in off_wars if (w.get("turns_left") or 0) > 0)
+        def_count = sum(1 for w in def_wars if (w.get("turns_left") or 0) > 0)
         return off_count, def_count
 
     async def get_nation_by_name(self, nation_name: str) -> dict | None:

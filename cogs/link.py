@@ -208,7 +208,10 @@ class Link(commands.Cog):
 
         try:
             nation = await self.bot.pw_client.get_nation(nation_id)
-            off_count, def_count = await self.bot.pw_client.get_active_war_counts(nation_id)
+            off_wars = (nation.get("offensive_wars") or []) if nation else []
+            def_wars = (nation.get("defensive_wars") or []) if nation else []
+            off_count = sum(1 for w in off_wars if (w.get("turns_left") or 0) > 0)
+            def_count = sum(1 for w in def_wars if (w.get("turns_left") or 0) > 0)
         except Exception as e:
             await interaction.followup.send(
                 embed=embeds.error("Lookup Failed", f"Error contacting the P&W API: `{e}`")
