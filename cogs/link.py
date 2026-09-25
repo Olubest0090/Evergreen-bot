@@ -94,8 +94,13 @@ def build_nation_embed(nation: dict, off_count: int = 0, def_count: int = 0) -> 
 
     blockading_nations = []
     for war in (nation.get("defensive_wars") or []):
-        if war.get("naval_blockade") and (war.get("turns_left") or 0) > 0:
-            attacker = war.get("attacker") or {"id": war.get("att_id")}
+        attacker = war.get("attacker") or {"id": war.get("att_id")}
+        # A blockade only holds while the attacker still has ships to
+        # enforce it — if their navy was wiped out (by us or by anyone
+        # else they're at war with), the blockade is effectively broken
+        # even if this war's naval_blockade flag hasn't reset.
+        still_has_ships = (attacker.get("ships") or 0) > 0
+        if war.get("naval_blockade") and (war.get("turns_left") or 0) > 0 and still_has_ships:
             blockading_nations.append(attacker)
     if blockading_nations:
         links = ", ".join(

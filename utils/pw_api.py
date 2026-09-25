@@ -67,7 +67,7 @@ class PWApiClient:
                 turns_left
                 naval_blockade
                 att_id
-                attacker { id nation_name }
+                attacker { id nation_name ships }
               }
             }
           }
