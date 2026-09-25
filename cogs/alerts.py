@@ -224,11 +224,11 @@ class Alerts(commands.Cog):
         our_nation = defender if side == "defense" else attacker
 
         pings = []
-        our_discord_id = await database.get_discord_id_for_nation(our_nation.get("id"))
-        if our_discord_id:
-            pings.append(f"<@{our_discord_id}>")
 
         if side == "defense":
+            our_discord_id = await database.get_discord_id_for_nation(our_nation.get("id"))
+            if our_discord_id:
+                pings.append(f"<@{our_discord_id}>")
             ma_role_id = await database.get_guild_role(guild_id, "MA")
             if ma_role_id:
                 pings.append(f"<@&{ma_role_id}>")
