@@ -1,8 +1,10 @@
 """
 Evergreen MILCOM Bot — entry point.
 
-Deployed on Render as a Background Worker so it stays connected 24/7
-without the sleep-on-idle behavior of Render's free Web Service tier.
+Deployed on Render as a free Web Service. Render's free tier only sleeps
+web services after 15 minutes with no HTTP traffic — so this file runs
+a tiny web server alongside the Discord bot purely to answer keep-alive
+pings (from UptimeRobot or similar) and stop it from sleeping.
 """
 
 import asyncio
@@ -10,6 +12,7 @@ import logging
 import os
 
 import aiohttp
+from aiohttp import web
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
@@ -26,6 +29,7 @@ INTENTS.members = True
 
 GUILD_ID = os.environ.get("GUILD_ID")
 TEST_GUILD = discord.Object(id=int(GUILD_ID)) if GUILD_ID else None
+PORT = int(os.environ.get("PORT", 8080))
 
 INITIAL_COGS = (
     "cogs.govrole",
@@ -54,6 +58,21 @@ class EvergreenBot(commands.Bot):
         else:
             await self.tree.sync()
             log.info("Synced commands globally (can take up to ~1 hour to appear)")
+
+        asyncio.create_task(self._start_webserver())
+
+    async def _start_webserver(self) -> None:
+        app = web.Application()
+        app.router.add_get("/", self._health_check)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", PORT)
+        await site.start()
+        log.info("Keep-alive web server listening on port %s", PORT)
+
+    async def _health_check(self, request: web.Request) -> web.Response:
+        status = "connected" if self.is_ready() else "starting"
+        return web.Response(text=f"Evergreen MILCOM bot: {status}")
 
     async def close(self) -> None:
         if self.http_session:
