@@ -3,6 +3,7 @@
 /whois — shows a full nation profile card for a linked member.
 """
 
+import asyncio
 import re
 from datetime import datetime, timezone
 
@@ -151,6 +152,9 @@ def build_nation_embed(nation: dict, off_count: int = 0, def_count: int = 0) -> 
 class Link(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+
+    async def _fetch_all_members(self, guild: discord.Guild) -> list[discord.Member]:
+        return [m async for m in guild.fetch_members(limit=None)]
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
@@ -338,7 +342,25 @@ class Link(commands.Cog):
         # Fetch members directly via Discord's REST API rather than
         # relying on the gateway member cache/chunk() — more reliable
         # regardless of whatever's causing the cache to under-populate.
-        guild_members = [m async for m in interaction.guild.fetch_members(limit=None)]
+        try:
+            guild_members = await asyncio.wait_for(
+                self._fetch_all_members(interaction.guild), timeout=30
+            )
+        except asyncio.TimeoutError:
+            await interaction.followup.send(
+                embed=embeds.error(
+                    "Timed Out",
+                    "Fetching the member list took too long (30s+). This may be a "
+                    "Discord API or bot-permissions issue — check that the bot has "
+                    "'View Server Members' permission and Members Intent is enabled.",
+                )
+            )
+            return
+        except Exception as e:
+            await interaction.followup.send(
+                embed=embeds.error("Member Fetch Failed", f"`{type(e).__name__}: {e}`")
+            )
+            return
 
         def normalize(s: str) -> str:
             # Always strip anything after '#' — modern Discord usernames
