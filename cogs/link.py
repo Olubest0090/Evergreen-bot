@@ -61,7 +61,7 @@ def format_duration(last_active_iso: str | None) -> str:
         return "unknown"
 
 
-def build_nation_embed(nation: dict) -> discord.Embed:
+def build_nation_embed(nation: dict, off_count: int = 0, def_count: int = 0) -> discord.Embed:
     nation_id = nation["id"]
     name = nation.get("nation_name", "Unknown")
     leader = nation.get("leader_name", "Unknown")
@@ -72,8 +72,16 @@ def build_nation_embed(nation: dict) -> discord.Embed:
     position = (nation.get("alliance_position") or "None").title()
     num_cities = len(nation.get("cities") or [])
 
-    off_count = len(nation.get("offensive_wars") or [])
-    def_count = len(nation.get("defensive_wars") or [])
+    # Base offensive slots is 5; pirate economy raises it to 6, and
+    # advanced pirate economy raises it to 7. Defensive slots are always
+    # a fixed 3 regardless of projects.
+    if nation.get("advanced_pirate_economy"):
+        max_off = 7
+    elif nation.get("pirate_economy"):
+        max_off = 6
+    else:
+        max_off = 5
+    max_def = 3
 
     status_parts = []
     if nation.get("vacation_mode_turns", 0) > 0:
@@ -93,7 +101,7 @@ def build_nation_embed(nation: dict) -> discord.Embed:
         f"**Alliance:** {alliance_name} ({position})\n"
         f"**Color Bloc:** {color}\n"
         f"**Cities:** {num_cities} | **Score:** {score:,.2f}\n"
-        f"**War Slots:** Offense {off_count}/5 · Defense {def_count}/3\n"
+        f"**War Slots:** Offense {off_count}/{max_off} · Defense {def_count}/{max_def}\n"
         f"**Last Active:** {format_duration(nation.get('last_active'))}\n"
         f"**Status:** {status}\n\n"
         f"**Military**\n"
@@ -200,6 +208,7 @@ class Link(commands.Cog):
 
         try:
             nation = await self.bot.pw_client.get_nation(nation_id)
+            off_count, def_count = await self.bot.pw_client.get_active_war_counts(nation_id)
         except Exception as e:
             await interaction.followup.send(
                 embed=embeds.error("Lookup Failed", f"Error contacting the P&W API: `{e}`")
@@ -212,7 +221,7 @@ class Link(commands.Cog):
             )
             return
 
-        await interaction.followup.send(embed=build_nation_embed(nation))
+        await interaction.followup.send(embed=build_nation_embed(nation, off_count, def_count))
 
 
 async def setup(bot: commands.Bot):
