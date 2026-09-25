@@ -1,5 +1,5 @@
 services:
-  - type: worker
+  - type: web
     name: evergreen-milcom-bot
     env: python
     plan: free
@@ -8,7 +8,9 @@ services:
     envVars:
       - key: DISCORD_TOKEN
         sync: false
-      - key: DATABASE_URL
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
         sync: false
       - key: PNW_API_KEY
         sync: false

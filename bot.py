@@ -18,6 +18,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 
 from utils import database
+from utils.pw_api import PWApiClient
 
 load_dotenv()
 
@@ -33,6 +34,8 @@ PORT = int(os.environ.get("PORT", 8080))
 
 INITIAL_COGS = (
     "cogs.govrole",
+    "cogs.link",
+    "cogs.alerts",
 )
 
 
@@ -40,12 +43,14 @@ class EvergreenBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=INTENTS)
         self.http_session: aiohttp.ClientSession | None = None
+        self.pw_client: PWApiClient | None = None
 
     async def setup_hook(self) -> None:
         await database.init_client()
         log.info("Supabase client ready")
 
         self.http_session = aiohttp.ClientSession()
+        self.pw_client = PWApiClient(self.http_session)
 
         for cog in INITIAL_COGS:
             await self.load_extension(cog)

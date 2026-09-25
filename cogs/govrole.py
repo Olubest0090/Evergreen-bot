@@ -1,6 +1,6 @@
 """
 /govrole set — registers which Discord role corresponds to each
-Evergreen government position (Military, Economic, Foreign, Interior
+Evergreen government position (Military, Economic, Foreign, Internal
 Affairs), so every other part of the bot knows who to ping.
 """
 

@@ -1,5 +1,10 @@
 """
 Thin wrapper around the Politics & War v3 GraphQL API.
+
+NOTE ON FIELD NAMES: if the API rejects a query, the GraphQL error
+message will name the exact bad field — check it against the live
+schema at https://api.politicsandwar.com/graphql-docs and adjust the
+query string here accordingly.
 """
 
 import os
@@ -54,6 +59,25 @@ class PWApiClient:
         nations = data["nations"]["data"]
         return nations[0] if nations else None
 
+    async def get_nation_by_name(self, nation_name: str) -> dict | None:
+        query = """
+        query($name: [String]) {
+          nations(nation_name: $name, first: 1) {
+            data {
+              id
+              nation_name
+              leader_name
+              score
+              alliance_id
+              alliance { name }
+            }
+          }
+        }
+        """
+        data = await self._query(query, {"name": [nation_name]})
+        nations = data["nations"]["data"]
+        return nations[0] if nations else None
+
     async def get_alliance_members(self, alliance_id: int) -> list[dict]:
         query = """
         query($id: [Int]) {
@@ -65,11 +89,13 @@ class PWApiClient:
                 id
                 nation_name
                 leader_name
+                alliance_position
                 score
                 soldiers
                 tanks
                 aircraft
                 ships
+                spies
               }
             }
           }
@@ -78,3 +104,25 @@ class PWApiClient:
         data = await self._query(query, {"id": [alliance_id]})
         alliances = data["alliances"]["data"]
         return alliances[0]["nations"] if alliances else []
+
+    async def get_active_wars(self, alliance_id: int) -> list[dict]:
+        query = """
+        query($id: [Int]) {
+          wars(alliance_id: $id, active: true, first: 100) {
+            data {
+              id
+              date
+              war_type
+              turns_left
+              att_id
+              def_id
+              att_alliance_id
+              def_alliance_id
+              attacker { id nation_name alliance_position }
+              defender { id nation_name alliance_position }
+            }
+          }
+        }
+        """
+        data = await self._query(query, {"id": [alliance_id]})
+        return data["wars"]["data"]
