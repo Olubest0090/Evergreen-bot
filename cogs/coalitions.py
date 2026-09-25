@@ -20,12 +20,15 @@ BLOC_CHOICES = [
 
 
 async def is_dnr_protected(bot, guild_id: int, alliance_id: int) -> bool:
-    # Never raidable: our own allies, manually-flagged DNR alliances,
-    # or anyone in the auto-computed top-X by score.
-    if await database.is_alliance_in_bloc(guild_id, alliance_id, "ALLIES"):
-        return True
-    if await database.is_alliance_in_bloc(guild_id, alliance_id, "DNR"):
-        return True
+    # Never raidable: our own allies, their known extension/offshore
+    # alliances, manually-flagged DNR alliances, or anyone in the
+    # auto-computed top-X by score. P&W's API doesn't expose which
+    # alliances are whose extension/offshore, so those get added
+    # manually to the EXTENSION bloc via /bloc add and are protected
+    # the same as a direct ally.
+    for bloc_type in ("ALLIES", "EXTENSION", "DNR"):
+        if await database.is_alliance_in_bloc(guild_id, alliance_id, bloc_type):
+            return True
 
     top_x = await database.get_dnr_top_x(guild_id)
     if top_x <= 0:
