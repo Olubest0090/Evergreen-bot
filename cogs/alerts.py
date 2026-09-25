@@ -133,8 +133,28 @@ class Alerts(commands.Cog):
     async def refresh(self, interaction: discord.Interaction):
         await interaction.response.defer()
         try:
-            await self._poll_guild(interaction.guild_id)
-            await interaction.followup.send(embed=embeds.success("Refreshed", "Checked for new wars and espionage."))
+            config = await database.get_alerts_config(interaction.guild_id)
+            alliance_id = config.get("alliance_id") if config else None
+            if not alliance_id:
+                await interaction.followup.send(embed=embeds.error("No Alliance Set", "Set one with /alerts alliance."))
+                return
+
+            wars = await self.bot.pw_client.get_active_wars(alliance_id)
+            defense_count = sum(1 for w in wars if w.get("def_alliance_id") == alliance_id)
+            offense_count = sum(1 for w in wars if w.get("att_alliance_id") == alliance_id)
+            neither_count = len(wars) - defense_count - offense_count
+
+            await self._poll_guild(interaction.guild_id, config)
+
+            await interaction.followup.send(
+                embed=embeds.success(
+                    "Refreshed",
+                    f"API returned **{len(wars)}** total active wars for alliance `{alliance_id}`.\n"
+                    f"Classified as defense (our side is defender): **{defense_count}**\n"
+                    f"Classified as offense (our side is attacker): **{offense_count}**\n"
+                    f"Matched neither side: **{neither_count}**",
+                )
+            )
         except Exception as e:
             await interaction.followup.send(embed=embeds.error("Refresh Failed", str(e)))
 
