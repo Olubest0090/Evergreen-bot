@@ -4,6 +4,7 @@ receive defensive/offensive war alerts and espionage alerts. Also runs
 the background loop that polls the P&W API and posts those alerts.
 """
 
+import asyncio
 from datetime import datetime, timezone
 
 import discord
@@ -165,8 +166,10 @@ class Alerts(commands.Cog):
         for war in wars:
             await self._handle_war(guild_id, config, alliance_id, war, member_positions)
 
-        for member in members:
-            await self._handle_espionage_check(guild_id, config, member)
+        await asyncio.gather(*[
+            self._handle_espionage_check(guild_id, config, member)
+            for member in members
+        ], return_exceptions=True)
 
     async def _handle_war(self, guild_id, config, alliance_id, war, member_positions):
         war_id = war["id"]
