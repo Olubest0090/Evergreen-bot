@@ -36,6 +36,7 @@ INITIAL_COGS = (
     "cogs.govrole",
     "cogs.link",
     "cogs.alerts",
+    "cogs.coalitions",
 )
 
 

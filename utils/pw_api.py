@@ -167,6 +167,39 @@ class PWApiClient:
         data = await self._query(query, {"min": min_score, "max": max_score})
         return data["nations"]["data"]
 
+    async def get_alliance_by_id_or_name(self, text: str) -> dict | None:
+        text = text.strip()
+        if text.isdigit():
+            query = """
+            query($id: [Int]) {
+              alliances(id: $id, first: 1) { data { id name score } }
+            }
+            """
+            data = await self._query(query, {"id": [int(text)]})
+        else:
+            query = """
+            query($name: [String]) {
+              alliances(name: $name, first: 1) { data { id name score } }
+            }
+            """
+            data = await self._query(query, {"name": [text]})
+        alliances = data["alliances"]["data"]
+        return alliances[0] if alliances else None
+
+    async def get_top_alliances(self, limit: int) -> list[dict]:
+        """Top alliances by score, used for the DNR top-X threshold.
+        NOTE: orderBy syntax is a best guess at the live schema — if this
+        errors, the message will show the correct argument shape."""
+        query = """
+        query($limit: Int) {
+          alliances(first: $limit, orderBy: [{column: SCORE, order: DESC}]) {
+            data { id name score }
+          }
+        }
+        """
+        data = await self._query(query, {"limit": limit})
+        return data["alliances"]["data"]
+
     async def get_active_wars(self, alliance_id: int) -> list[dict]:
         """
         IMPORTANT: the wars(alliance_id: ...) filter argument does NOT

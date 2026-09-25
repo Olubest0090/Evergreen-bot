@@ -162,3 +162,71 @@ async def set_last_spies(nation_id: int, spies: int) -> None:
     async with _session.post(url, json=payload, headers=headers) as resp:
         if resp.status not in (200, 201, 204):
             raise RuntimeError(f"Supabase error {resp.status}: {await resp.text()}")
+
+# ---- dnr_settings (Phase 3) ----
+
+async def set_dnr_top_x(guild_id: int, top_x: int) -> None:
+    url = f"{_base_url}/rest/v1/dnr_settings?on_conflict=guild_id"
+    payload = {"guild_id": guild_id, "top_x": top_x}
+    headers = {"Prefer": "resolution=merge-duplicates,return=minimal"}
+    async with _session.post(url, json=payload, headers=headers) as resp:
+        if resp.status not in (200, 201, 204):
+            raise RuntimeError(f"Supabase error {resp.status}: {await resp.text()}")
+
+
+async def get_dnr_top_x(guild_id: int) -> int:
+    url = f"{_base_url}/rest/v1/dnr_settings"
+    params = {"guild_id": f"eq.{guild_id}", "select": "top_x"}
+    async with _session.get(url, params=params) as resp:
+        data = await resp.json()
+        return data[0]["top_x"] if data else 0
+
+
+# ---- coalitions (Phase 3) ----
+
+async def add_coalition_alliance(guild_id: int, alliance_id: int, alliance_name: str, bloc_type: str) -> None:
+    url = f"{_base_url}/rest/v1/coalitions?on_conflict=guild_id,alliance_id,bloc_type"
+    payload = {
+        "guild_id": guild_id,
+        "alliance_id": alliance_id,
+        "alliance_name": alliance_name,
+        "bloc_type": bloc_type,
+    }
+    headers = {"Prefer": "resolution=merge-duplicates,return=minimal"}
+    async with _session.post(url, json=payload, headers=headers) as resp:
+        if resp.status not in (200, 201, 204):
+            raise RuntimeError(f"Supabase error {resp.status}: {await resp.text()}")
+
+
+async def remove_coalition_alliance(guild_id: int, alliance_id: int, bloc_type: str) -> None:
+    url = f"{_base_url}/rest/v1/coalitions"
+    params = {
+        "guild_id": f"eq.{guild_id}",
+        "alliance_id": f"eq.{alliance_id}",
+        "bloc_type": f"eq.{bloc_type}",
+    }
+    async with _session.delete(url, params=params) as resp:
+        if resp.status not in (200, 204):
+            raise RuntimeError(f"Supabase error {resp.status}: {await resp.text()}")
+
+
+async def list_coalitions(guild_id: int, bloc_type: str | None = None) -> list[dict]:
+    url = f"{_base_url}/rest/v1/coalitions"
+    params = {"guild_id": f"eq.{guild_id}", "select": "*"}
+    if bloc_type:
+        params["bloc_type"] = f"eq.{bloc_type}"
+    async with _session.get(url, params=params) as resp:
+        return await resp.json()
+
+
+async def is_alliance_in_bloc(guild_id: int, alliance_id: int, bloc_type: str) -> bool:
+    url = f"{_base_url}/rest/v1/coalitions"
+    params = {
+        "guild_id": f"eq.{guild_id}",
+        "alliance_id": f"eq.{alliance_id}",
+        "bloc_type": f"eq.{bloc_type}",
+        "select": "alliance_id",
+    }
+    async with _session.get(url, params=params) as resp:
+        data = await resp.json()
+        return bool(data)
