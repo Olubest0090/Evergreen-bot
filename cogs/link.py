@@ -152,6 +152,47 @@ class Link(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member):
+        """When someone joins, check if their Discord username matches
+        a stored username on any alliance nation, and auto-link them.
+        This works even where bulk /autolink can't, since it only needs
+        this one member object — no guild-wide cache/chunk required."""
+        config = await database.get_alerts_config(member.guild.id)
+        alliance_id = config.get("alliance_id") if config else None
+        if not alliance_id:
+            return
+
+        try:
+            nations = await self.bot.pw_client.get_alliance_members(alliance_id)
+        except Exception:
+            return
+
+        def normalize(s: str) -> str:
+            return s.strip().lower().lstrip("@").split("#")[0]
+
+        candidates = {normalize(member.name)}
+        if member.global_name:
+            candidates.add(normalize(member.global_name))
+
+        for nation in nations:
+            tag = nation.get("discord")
+            if tag and normalize(tag) in candidates:
+                try:
+                    await database.link_nation(member.guild.id, member.id, nation["id"])
+                    try:
+                        await member.send(
+                            f"Welcome to Evergreen! I automatically linked your Discord "
+                            f"to your nation **{nation['nation_name']}** based on your "
+                            f"P&W profile. Use `/whois` anytime to check it, or `/link` "
+                            f"if this was wrong."
+                        )
+                    except discord.Forbidden:
+                        pass  # DMs closed — link still succeeded, just no notice sent
+                except Exception:
+                    pass
+                return
+
     @app_commands.command(name="link", description="Link a Discord member to their P&W nation")
     @app_commands.describe(
         nation="Nation ID, full nation URL, or exact nation name",
