@@ -218,6 +218,8 @@ class Coalitions(commands.Cog):
             return
 
         try:
+            raw_treaties = await self.bot.pw_client.get_alliance_treaties(alliance_id)
+
             before = await database.list_coalitions(interaction.guild_id, "ALLIES")
             before_ids = {r["alliance_id"] for r in before}
 
@@ -231,6 +233,8 @@ class Coalitions(commands.Cog):
             await interaction.followup.send(embed=embeds.error("Sync Failed", f"P&W API error: `{e}`"))
             return
 
+        treaty_names = ", ".join(t["other_alliance_name"] for t in raw_treaties) or "none found"
+
         await database.mark_flag_used(interaction.guild_id, "bloc_syncnow")
 
         # Remove this command from the tree and resync so it vanishes
@@ -241,6 +245,7 @@ class Coalitions(commands.Cog):
         await interaction.followup.send(
             embed=embeds.success(
                 "Treaty Sync Complete",
+                f"**Raw API treaty count:** {len(raw_treaties)} ({treaty_names})\n"
                 f"Added: {len(added)} | Removed: {len(removed)}\n\n"
                 f"This command is now permanently disabled and removed from Discord. "
                 f"The regular 10-minute auto-sync loop continues running as normal.",
