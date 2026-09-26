@@ -178,18 +178,36 @@ class Alerts(commands.Cog):
         pw_client = self.bot.pw_client
 
         members = await pw_client.get_alliance_members(alliance_id)
-        member_positions = {m["id"]: m.get("alliance_position") for m in members}
 
         wars = await pw_client.get_active_wars(alliance_id)
+
+        # A defensive war is a "counter" if OUR member (the defender)
+        # currently has an active offensive war against SOMEONE IN THE
+        # SAME ALLIANCE as this new attacker.
+        our_offense_by_member: dict[int, set[int]] = {}
+        for w in wars:
+            if w.get("_side") == "offense":
+                our_nation_id = w.get("att_id")
+                enemy_alliance_id = (w.get("defender") or {}).get("alliance_id")
+                if our_nation_id and enemy_alliance_id:
+                    our_offense_by_member.setdefault(our_nation_id, set()).add(enemy_alliance_id)
+
         for war in wars:
-            await self._handle_war(guild_id, config, war)
+            is_counter = False
+            if war.get("_side") == "defense":
+                our_nation_id = war.get("def_id")
+                enemy_alliance_id = (war.get("attacker") or {}).get("alliance_id")
+                is_counter = enemy_alliance_id in our_offense_by_member.get(our_nation_id, set())
+            await self._handle_war(guild_id, config, war, is_counter)
 
         await asyncio.gather(*[
             self._handle_espionage_check(guild_id, config, member, alliance_id)
             for member in members
         ], return_exceptions=True)
 
-    async def _handle_war(self, guild_id, config, war):
+    async def _handle_war(self, guild_id, config, war, is_counter=False):
+        from cogs.coalitions import is_dnr_protected
+
         war_id = war["id"]
         side = war.get("_side")
         position = war.get("_our_position") or "APPLICANT"
@@ -202,7 +220,7 @@ class Alerts(commands.Cog):
             channel_id = config.get("defense_channel_id")
             if not channel_id:
                 return
-            await self._send_war_alert(guild_id, channel_id, war, side="defense")
+            await self._send_war_alert(guild_id, channel_id, war, side="defense", is_counter=is_counter)
             await database.mark_war_alerted(war_id, "alerted_defense")
 
         elif side == "offense":
@@ -211,10 +229,23 @@ class Alerts(commands.Cog):
             channel_id = config.get("offensive_channel_id")
             if not channel_id:
                 return
-            await self._send_war_alert(guild_id, channel_id, war, side="offense")
+
+            defender = war.get("defender") or {}
+            defender_alliance_id = defender.get("alliance_id")
+            defender_position = defender.get("alliance_position")
+            is_violation = False
+            if defender_alliance_id:
+                try:
+                    is_violation = await is_dnr_protected(self.bot, guild_id, defender_alliance_id, defender_position)
+                except Exception:
+                    pass
+
+            await self._send_war_alert(
+                guild_id, channel_id, war, side="offense", is_dnr_violation=is_violation
+            )
             await database.mark_war_alerted(war_id, "alerted_offensive")
 
-    async def _send_war_alert(self, guild_id, channel_id, war, side):
+    async def _send_war_alert(self, guild_id, channel_id, war, side, is_counter=False, is_dnr_violation=False):
         channel = self.bot.get_channel(channel_id)
         if not channel:
             return
@@ -232,9 +263,21 @@ class Alerts(commands.Cog):
             ma_role_id = await database.get_guild_role(guild_id, "MA")
             if ma_role_id:
                 pings.append(f"<@&{ma_role_id}>")
-            embed = embeds.warning("🛡️ Defensive War Started")
+            if is_counter:
+                embed = embeds.warning("↩️ COUNTER-ATTACK — Defensive War Started")
+            else:
+                embed = embeds.warning("🛡️ Defensive War Started")
         else:
-            embed = embeds.info("⚔️ Offensive War Started")
+            if is_dnr_violation:
+                our_discord_id = await database.get_discord_id_for_nation(our_nation.get("id"))
+                if our_discord_id:
+                    pings.append(f"<@{our_discord_id}>")
+                fa_role_id = await database.get_guild_role(guild_id, "FA")
+                if fa_role_id:
+                    pings.append(f"<@&{fa_role_id}>")
+                embed = embeds.error("🚫 DNR VIOLATION — Offensive War Started")
+            else:
+                embed = embeds.info("⚔️ Offensive War Started")
 
         war_type = war.get("war_type", "Unknown")
         turns_left = war.get("turns_left", "?")
@@ -243,9 +286,20 @@ class Alerts(commands.Cog):
         att_block = nation_block(attacker, war.get("att_resistance"), war.get("att_points"))
         def_block = nation_block(defender, war.get("def_resistance"), war.get("def_points"))
 
+        counter_note = (
+            "\n⚠️ **This appears to be a counter-attack** — the attacker is "
+            "currently being fought by one of our members in an offensive war.\n"
+            if is_counter else ""
+        )
+        violation_note = (
+            "\n🚫 **This is a DNR VIOLATION** — the target is protected.\n"
+            if is_dnr_violation else ""
+        )
+
         embed.description = (
             f"**{attacker.get('nation_name', 'Unknown')} > {defender.get('nation_name', 'Unknown')}** "
-            f"— {war_type} — ACTIVE\n\n"
+            f"— {war_type} — ACTIVE\n"
+            f"{counter_note}{violation_note}\n"
             f"Link: [Click here]({war_link})\n\n"
             f"{att_block}\n\n"
             f"{def_block}\n\n"
@@ -270,8 +324,6 @@ class Alerts(commands.Cog):
                 ping = f"<@{discord_id}> " if discord_id else ""
 
                 score = member.get("score", 0)
-                # Defensive spy range: score/2.5 to score*2.5 — anyone
-                # in this range could have spied this nation.
                 min_score, max_score = score / 2.5, score * 2.5
 
                 suspects_text = "Couldn't determine suspects."
@@ -281,7 +333,7 @@ class Alerts(commands.Cog):
                     suspects = []
                     for c in candidates:
                         if c.get("alliance_id") == our_alliance_id:
-                            continue  # skip our own alliance mates
+                            continue
                         last_active_raw = c.get("last_active")
                         if not last_active_raw:
                             continue
@@ -289,9 +341,6 @@ class Alerts(commands.Cog):
                             last_active = datetime.fromisoformat(last_active_raw.replace("Z", "+00:00"))
                         except Exception:
                             continue
-                        # "Online at the time" — active within the last
-                        # 15 minutes, matching roughly the poll cadence
-                        # plus buffer for API/timezone slack.
                         if (now - last_active).total_seconds() <= 900:
                             suspects.append(c)
 

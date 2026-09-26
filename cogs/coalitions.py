@@ -26,10 +26,18 @@ BLOC_CHOICES = [
 TREATY_SYNC_INTERVAL_SECONDS = 600
 
 
-async def is_dnr_protected(bot, guild_id: int, alliance_id: int) -> bool:
-    # Never raidable: our own allies, their known extension/offshore
-    # alliances, manually-flagged DNR alliances, or anyone in the
-    # auto-computed top-X by score.
+async def is_dnr_protected(bot, guild_id: int, alliance_id: int, nation_position: str | None = None) -> bool:
+    # DNR_MEMBERS is a carve-out: full members of this alliance are
+    # protected, but their applicants are still valid raid targets.
+    # This takes precedence over every other category, so an alliance
+    # can be top-X ranked (normally full protection) and still have its
+    # applicants exposed if FA specifically flagged it this way.
+    if await database.is_alliance_in_bloc(guild_id, alliance_id, "DNR_MEMBERS"):
+        return (nation_position or "").upper() != "APPLICANT"
+
+    # Full, no-exceptions protection: our own allies, their known
+    # extension/offshore alliances, manually-flagged DNR alliances, or
+    # anyone in the auto-computed top-X by score.
     for bloc_type in ("ALLIES", "EXTENSION", "DNR"):
         if await database.is_alliance_in_bloc(guild_id, alliance_id, bloc_type):
             return True
@@ -175,7 +183,8 @@ class Coalitions(commands.Cog):
             )
             return
 
-        protected = await is_dnr_protected(self.bot, interaction.guild_id, alliance_id)
+        position = nation_data.get("alliance_position")
+        protected = await is_dnr_protected(self.bot, interaction.guild_id, alliance_id, position)
         if protected:
             await interaction.followup.send(
                 embed=embeds.error(
@@ -185,9 +194,10 @@ class Coalitions(commands.Cog):
                 )
             )
         else:
+            note = " (applicant — exempt from this alliance's DNR_MEMBERS protection)" if position and position.upper() == "APPLICANT" else ""
             await interaction.followup.send(
                 embed=embeds.success(
-                    "✅ Allowed", f"**{nation_data['nation_name']}** ({alliance_name}) is not DNR-protected."
+                    "✅ Allowed", f"**{nation_data['nation_name']}** ({alliance_name}) is not DNR-protected{note}."
                 )
             )
 
