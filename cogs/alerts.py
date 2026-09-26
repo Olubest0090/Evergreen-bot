@@ -327,10 +327,10 @@ class Alerts(commands.Cog):
                 min_score, max_score = score / 2.5, score * 2.5
 
                 suspects_text = "Couldn't determine suspects."
+                suspects = []
                 try:
                     candidates = await self.bot.pw_client.get_nations_in_score_range(min_score, max_score)
                     now = datetime.now(timezone.utc)
-                    suspects = []
                     for c in candidates:
                         if c.get("alliance_id") == our_alliance_id:
                             continue
@@ -342,29 +342,53 @@ class Alerts(commands.Cog):
                         except Exception:
                             continue
                         if (now - last_active).total_seconds() <= 900:
+                            c["_last_active_dt"] = last_active
                             suspects.append(c)
 
-                    if suspects:
-                        lines = [
-                            f"[{s['nation_name']}](https://politicsandwar.com/nation/id={s['id']}) "
-                            f"— *{(s.get('alliance') or {}).get('name', 'None')}*"
-                            for s in suspects[:15]
-                        ]
-                        suspects_text = "\n".join(lines)
-                        if len(suspects) > 15:
-                            suspects_text += f"\n*+{len(suspects) - 15} more*"
-                    else:
-                        suspects_text = "No recently-active nations found in range."
+                    # Most recently active first — the most likely spy
+                    # is whoever acted closest to the moment of the loss.
+                    suspects.sort(key=lambda s: s["_last_active_dt"], reverse=True)
                 except Exception as e:
-                    suspects_text = f"Error looking up suspects: `{e}`"
+                    suspects = None
+                    suspect_error = str(e)
 
                 embed = embeds.warning(
                     "🕵️ Possible Espionage Loss",
                     f"**{member.get('nation_name', 'Unknown')}** lost spies: "
                     f"{last_spies} → {current_spies}.\n"
-                    f"This may indicate a successful enemy spy operation.\n\n"
-                    f"**Possible suspects** (in defensive spy range, active in last 15 min):\n{suspects_text}",
+                    f"This may indicate a successful enemy spy operation.",
                 )
+
+                if suspects is None:
+                    embed.add_field(
+                        name="Possible Suspects", value=f"Error looking up suspects: `{suspect_error}`", inline=False
+                    )
+                elif not suspects:
+                    embed.add_field(
+                        name="Possible Suspects (defensive spy range, active in last 15 min)",
+                        value="None found.",
+                        inline=False,
+                    )
+                else:
+                    lines = [
+                        f"[{s['nation_name']}](https://politicsandwar.com/nation/id={s['id']}) "
+                        f"— *{(s.get('alliance') or {}).get('name', 'None')}* — "
+                        f"{format_duration(s.get('last_active'))} ago"
+                        for s in suspects
+                    ]
+                    # Split into embed fields of ~10 lines each so the
+                    # FULL list always fits (a field caps at 1024 chars;
+                    # multiple fields let us show everyone, not just a
+                    # truncated "+N more").
+                    chunk_size = 10
+                    for i in range(0, len(lines), chunk_size):
+                        chunk = lines[i : i + chunk_size]
+                        field_name = (
+                            "Possible Suspects (defensive spy range, active in last 15 min, most recent first)"
+                            if i == 0 else "\u200b"
+                        )
+                        embed.add_field(name=field_name, value="\n".join(chunk), inline=False)
+
                 await channel.send(content=ping or None, embed=embed)
 
         await database.set_last_spies(nation_id, current_spies)
