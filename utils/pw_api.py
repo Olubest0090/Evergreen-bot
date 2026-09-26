@@ -183,18 +183,22 @@ class PWApiClient:
         if not alliances:
             return []
 
-        our_id = alliance_id
+        our_id_str = str(alliance_id)
         results = []
         for t in alliances[0].get("treaties") or []:
-            if (t.get("turns_left") or 0) <= 0:
-                continue
+            # Don't filter by turns_left here — permanent treaties
+            # (the majority) have no countdown and may report 0/null,
+            # which is NOT the same as "expired" the way it is for wars.
             a1 = t.get("alliance1") or {}
             a2 = t.get("alliance2") or {}
-            other = a2 if a1.get("id") == our_id else a1
-            if other.get("id"):
+            # Compare as strings — GraphQL ID scalars often serialize
+            # as strings even when queried with an Int variable, so a
+            # naive int comparison silently fails every time.
+            other = a2 if str(a1.get("id")) == our_id_str else a1
+            if other.get("id") and str(other["id"]) != our_id_str:
                 results.append({
                     "treaty_type": t.get("treaty_type"),
-                    "other_alliance_id": other["id"],
+                    "other_alliance_id": int(other["id"]),
                     "other_alliance_name": other.get("name"),
                 })
         return results
