@@ -37,6 +37,7 @@ INITIAL_COGS = (
     "cogs.link",
     "cogs.alerts",
     "cogs.coalitions",
+    "cogs.warroom",
 )
 
 

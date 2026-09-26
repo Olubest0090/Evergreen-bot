@@ -203,6 +203,62 @@ class PWApiClient:
                 })
         return results
 
+    async def get_war(self, war_id: int) -> dict | None:
+        """Single war lookup, for the war room pin and /war info."""
+        war_fields = """
+              id
+              war_type
+              turns_left
+              att_id
+              def_id
+              att_resistance
+              def_resistance
+              att_points
+              def_points
+              attacker {
+                id nation_name alliance_id alliance_position alliance { name }
+                last_active soldiers tanks aircraft ships spies
+              }
+              defender {
+                id nation_name alliance_id alliance_position alliance { name }
+                last_active soldiers tanks aircraft ships spies
+              }
+        """
+        query = f"""
+        query($id: [Int]) {{
+          wars(id: $id, first: 1) {{
+            data {{ {war_fields} }}
+          }}
+        }}
+        """
+        data = await self._query(query, {"id": [war_id]})
+        wars = data["wars"]["data"]
+        return wars[0] if wars else None
+
+    async def get_war_attacks(self, war_id: int) -> list[dict]:
+        """Minimal attack feed — kept intentionally small since exact
+        WarAttack field names (casualties, loot breakdown, etc.) are
+        unverified against the live schema. Expand once this confirmed
+        query works, rather than guessing many fields at once."""
+        query = """
+        query($id: [Int]) {
+          wars(id: $id, first: 1) {
+            data {
+              id
+              attacks {
+                id
+                date
+                type
+                success
+              }
+            }
+          }
+        }
+        """
+        data = await self._query(query, {"id": [war_id]})
+        wars = data["wars"]["data"]
+        return wars[0].get("attacks") or [] if wars else []
+
     async def get_nations_in_score_range(self, min_score: float, max_score: float) -> list[dict]:
         query = """
         query($min: Float, $max: Float) {
