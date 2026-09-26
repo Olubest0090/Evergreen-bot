@@ -269,23 +269,47 @@ class Coalitions(commands.Cog):
         await self.bot.wait_until_ready()
 
     async def _sync_guild_treaties(self, guild_id: int, alliance_id: int):
-        treaties = await self.bot.pw_client.get_alliance_treaties(alliance_id)
-        current_ally_ids = {t["other_alliance_id"] for t in treaties}
+        # Real ally-tier pacts grant DNR protection as ALLIES. Extension
+        # and offshore treaties are a different relationship and go to
+        # EXTENSION. NAP is not a full ally but we still won't raid
+        # them, so it goes to DNR.
+        ALLY_TYPES = {"ODP", "ODOAP", "MDP", "MDOAP", "PROTECTORATE"}
+        EXTENSION_TYPES = {"EXTENSION", "OFFSHORE"}
+        DNR_TYPES = {"NAP"}
 
-        # Add any new treaty partners not already in ALLIES.
+        treaties = await self.bot.pw_client.get_alliance_treaties(alliance_id)
+
+        def bloc_for(ttype: str) -> str | None:
+            ttype = (ttype or "").upper()
+            if ttype in ALLY_TYPES:
+                return "ALLIES"
+            if ttype in EXTENSION_TYPES:
+                return "EXTENSION"
+            if ttype in DNR_TYPES:
+                return "DNR"
+            return None
+
+        current_by_bloc: dict[str, set[int]] = {"ALLIES": set(), "EXTENSION": set(), "DNR": set()}
         for t in treaties:
-            already_present = await database.is_alliance_in_bloc(guild_id, t["other_alliance_id"], "ALLIES")
+            bloc = bloc_for(t.get("treaty_type"))
+            if bloc:
+                current_by_bloc[bloc].add(t["other_alliance_id"])
+
+        for t in treaties:
+            bloc = bloc_for(t.get("treaty_type"))
+            if not bloc:
+                continue
+            already_present = await database.is_alliance_in_bloc(guild_id, t["other_alliance_id"], bloc)
             if not already_present:
                 await database.add_coalition_alliance(
-                    guild_id, t["other_alliance_id"], t["other_alliance_name"], "ALLIES", auto_synced=True
+                    guild_id, t["other_alliance_id"], t["other_alliance_name"], bloc, auto_synced=True
                 )
 
-        # Remove only auto-synced ALLIES entries whose treaty no longer
-        # exists — manual entries (auto_synced=False) are left alone.
-        existing = await database.list_coalitions(guild_id, "ALLIES")
-        for row in existing:
-            if row.get("auto_synced") and row["alliance_id"] not in current_ally_ids:
-                await database.remove_coalition_alliance(guild_id, row["alliance_id"], "ALLIES")
+        for bloc, current_ids in current_by_bloc.items():
+            existing = await database.list_coalitions(guild_id, bloc)
+            for row in existing:
+                if row.get("auto_synced") and row["alliance_id"] not in current_ids:
+                    await database.remove_coalition_alliance(guild_id, row["alliance_id"], bloc)
 
 
 async def setup(bot: commands.Bot):
