@@ -94,13 +94,9 @@ def build_nation_embed(nation: dict, off_count: int = 0, def_count: int = 0) -> 
     domestic_policy = (nation.get("domestic_policy") or "None").replace("_", " ").title()
     war_policy = (nation.get("war_policy") or "None").replace("_", " ").title()
 
-    # Revenue, Timers & Projects
-    gni = nation.get("gross_national_income", 0) or 0
-    city_timer = format_timer_seconds(nation.get("city_timer"))
-    color_timer = format_timer_seconds(nation.get("color_timer"))
-    project_timer = format_timer_seconds(nation.get("project_timer"))
-    projects_list = nation.get("projects", []) or []
-    project_count = len(projects_list) if isinstance(projects_list, list) else 0
+    # projects is a direct integer count on the live API (confirmed via
+    # live query test), not a list — no calculation needed.
+    project_count = nation.get("projects", 0) or 0
 
     status_parts = []
     if nation.get("vacation_mode_turns", 0) > 0:
@@ -146,8 +142,6 @@ def build_nation_embed(nation: dict, off_count: int = 0, def_count: int = 0) -> 
         f"**Color Bloc:** {color}\n"
         f"**Domestic Policy:** {domestic_policy} | **War Policy:** {war_policy}\n"
         f"**Cities:** {num_cities} | **Score:** {score:,.2f}\n"
-        f"**Revenue (GNI):** ${gni:,.2f}\n"
-        f"**Timers:** City: `{city_timer}` | Color: `{color_timer}` | Project: `{project_timer}`\n"
         f"**Projects Built:** {project_count}\n"
         f"**War Slots:** Offense {off_count}/{max_off} · Defense {def_count}/{max_def}\n"
         f"**Last Active:** {format_duration(nation.get('last_active'))}\n"

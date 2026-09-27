@@ -60,6 +60,11 @@ class PWApiClient:
               advanced_pirate_economy
               domestic_policy
               war_policy
+              revenue
+              city_turns
+              color_turns
+              project_turns
+              projects
               offensive_wars {
                 id turns_left naval_blockade att_id def_id
                 defender { id nation_name alliance_id }
