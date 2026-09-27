@@ -330,7 +330,8 @@ class WarRoom(commands.Cog):
             for war in wars_by_enemy.get(room["enemy_nation_id"], []):
                 try:
                     attacks = await self.bot.pw_client.get_war_attacks(war["id"])
-                except Exception:
+                except Exception as e:
+                    print(f"[warroom] get_war_attacks failed for war {war['id']}: {e}")
                     continue
                 for attack in attacks:
                     if await database.is_attack_seen(attack["id"]):
