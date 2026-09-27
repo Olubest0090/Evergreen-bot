@@ -273,49 +273,6 @@ async def get_warroom_settings(guild_id: int) -> dict | None:
         return data[0] if data else None
 
 
-# ---- war_rooms (Phase 4) ----
-
-async def create_war_room(guild_id: int, war_id: int, channel_id: int, category_id: int) -> None:
-    url = f"{_base_url}/rest/v1/war_rooms?on_conflict=war_id"
-    payload = {"guild_id": guild_id, "war_id": war_id, "channel_id": channel_id, "category_id": category_id}
-    headers = {"Prefer": "resolution=merge-duplicates,return=minimal"}
-    async with _session.post(url, json=payload, headers=headers) as resp:
-        if resp.status not in (200, 201, 204):
-            raise RuntimeError(f"Supabase error {resp.status}: {await resp.text()}")
-
-
-async def get_war_room(war_id: int) -> dict | None:
-    url = f"{_base_url}/rest/v1/war_rooms"
-    params = {"war_id": f"eq.{war_id}", "select": "*"}
-    async with _session.get(url, params=params) as resp:
-        data = await resp.json()
-        return data[0] if data else None
-
-
-async def get_all_war_rooms(guild_id: int) -> list[dict]:
-    url = f"{_base_url}/rest/v1/war_rooms"
-    params = {"guild_id": f"eq.{guild_id}", "select": "*"}
-    async with _session.get(url, params=params) as resp:
-        return await resp.json()
-
-
-async def set_pin_message(war_id: int, message_id: int) -> None:
-    url = f"{_base_url}/rest/v1/war_rooms"
-    params = {"war_id": f"eq.{war_id}"}
-    payload = {"pin_message_id": message_id}
-    async with _session.patch(url, params=params, json=payload) as resp:
-        if resp.status not in (200, 204):
-            raise RuntimeError(f"Supabase error {resp.status}: {await resp.text()}")
-
-
-async def delete_war_room(war_id: int) -> None:
-    url = f"{_base_url}/rest/v1/war_rooms"
-    params = {"war_id": f"eq.{war_id}"}
-    async with _session.delete(url, params=params) as resp:
-        if resp.status not in (200, 204):
-            raise RuntimeError(f"Supabase error {resp.status}: {await resp.text()}")
-
-
 # ---- seen_attacks (Phase 4) ----
 
 async def is_attack_seen(attack_id: int) -> bool:
@@ -333,3 +290,108 @@ async def mark_attack_seen(attack_id: int) -> None:
     async with _session.post(url, json=payload, headers=headers) as resp:
         if resp.status not in (200, 201, 204):
             raise RuntimeError(f"Supabase error {resp.status}: {await resp.text()}")
+
+# ---- war_rooms (Phase 4, keyed by enemy nation) ----
+
+async def get_war_room(guild_id: int, enemy_nation_id: int) -> dict | None:
+    url = f"{_base_url}/rest/v1/war_rooms"
+    params = {"guild_id": f"eq.{guild_id}", "enemy_nation_id": f"eq.{enemy_nation_id}", "select": "*"}
+    async with _session.get(url, params=params) as resp:
+        data = await resp.json()
+        return data[0] if data else None
+
+
+async def get_war_room_by_channel(channel_id: int) -> dict | None:
+    url = f"{_base_url}/rest/v1/war_rooms"
+    params = {"channel_id": f"eq.{channel_id}", "select": "*"}
+    async with _session.get(url, params=params) as resp:
+        data = await resp.json()
+        return data[0] if data else None
+
+
+async def create_war_room(guild_id: int, enemy_nation_id: int, channel_id: int, category_id: int) -> None:
+    url = f"{_base_url}/rest/v1/war_rooms?on_conflict=guild_id,enemy_nation_id"
+    payload = {
+        "guild_id": guild_id,
+        "enemy_nation_id": enemy_nation_id,
+        "channel_id": channel_id,
+        "category_id": category_id,
+    }
+    headers = {"Prefer": "resolution=merge-duplicates,return=minimal"}
+    async with _session.post(url, json=payload, headers=headers) as resp:
+        if resp.status not in (200, 201, 204):
+            raise RuntimeError(f"Supabase error {resp.status}: {await resp.text()}")
+
+
+async def get_all_war_rooms(guild_id: int) -> list[dict]:
+    url = f"{_base_url}/rest/v1/war_rooms"
+    params = {"guild_id": f"eq.{guild_id}", "select": "*"}
+    async with _session.get(url, params=params) as resp:
+        return await resp.json()
+
+
+async def set_pin_message(guild_id: int, enemy_nation_id: int, message_id: int) -> None:
+    url = f"{_base_url}/rest/v1/war_rooms"
+    params = {"guild_id": f"eq.{guild_id}", "enemy_nation_id": f"eq.{enemy_nation_id}"}
+    payload = {"pin_message_id": message_id}
+    async with _session.patch(url, params=params, json=payload) as resp:
+        if resp.status not in (200, 204):
+            raise RuntimeError(f"Supabase error {resp.status}: {await resp.text()}")
+
+
+async def delete_war_room(guild_id: int, enemy_nation_id: int) -> None:
+    url = f"{_base_url}/rest/v1/war_rooms"
+    params = {"guild_id": f"eq.{guild_id}", "enemy_nation_id": f"eq.{enemy_nation_id}"}
+    async with _session.delete(url, params=params) as resp:
+        if resp.status not in (200, 204):
+            raise RuntimeError(f"Supabase error {resp.status}: {await resp.text()}")
+
+
+# ---- war_room_participants (Phase 4) ----
+
+async def add_room_participant(channel_id: int, discord_user_id: int) -> None:
+    url = f"{_base_url}/rest/v1/war_room_participants?on_conflict=channel_id,discord_user_id"
+    payload = {"channel_id": channel_id, "discord_user_id": discord_user_id}
+    headers = {"Prefer": "resolution=merge-duplicates,return=minimal"}
+    async with _session.post(url, json=payload, headers=headers) as resp:
+        if resp.status not in (200, 201, 204):
+            raise RuntimeError(f"Supabase error {resp.status}: {await resp.text()}")
+
+
+async def is_room_participant(channel_id: int, discord_user_id: int) -> bool:
+    url = f"{_base_url}/rest/v1/war_room_participants"
+    params = {
+        "channel_id": f"eq.{channel_id}",
+        "discord_user_id": f"eq.{discord_user_id}",
+        "select": "discord_user_id",
+    }
+    async with _session.get(url, params=params) as resp:
+        data = await resp.json()
+        return bool(data)
+
+
+# ---- warroom_brackets (Phase 4) ----
+
+async def add_bracket(guild_id: int, min_cities: int, max_cities: int, label: str) -> None:
+    url = f"{_base_url}/rest/v1/warroom_brackets?on_conflict=guild_id,min_cities,max_cities"
+    payload = {"guild_id": guild_id, "min_cities": min_cities, "max_cities": max_cities, "label": label}
+    headers = {"Prefer": "resolution=merge-duplicates,return=minimal"}
+    async with _session.post(url, json=payload, headers=headers) as resp:
+        if resp.status not in (200, 201, 204):
+            raise RuntimeError(f"Supabase error {resp.status}: {await resp.text()}")
+
+
+async def remove_bracket(guild_id: int, min_cities: int, max_cities: int) -> None:
+    url = f"{_base_url}/rest/v1/warroom_brackets"
+    params = {"guild_id": f"eq.{guild_id}", "min_cities": f"eq.{min_cities}", "max_cities": f"eq.{max_cities}"}
+    async with _session.delete(url, params=params) as resp:
+        if resp.status not in (200, 204):
+            raise RuntimeError(f"Supabase error {resp.status}: {await resp.text()}")
+
+
+async def list_brackets(guild_id: int) -> list[dict]:
+    url = f"{_base_url}/rest/v1/warroom_brackets"
+    params = {"guild_id": f"eq.{guild_id}", "select": "*", "order": "min_cities.asc"}
+    async with _session.get(url, params=params) as resp:
+        return await resp.json()
+

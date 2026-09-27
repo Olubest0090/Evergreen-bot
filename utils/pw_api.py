@@ -301,11 +301,11 @@ class PWApiClient:
               naval_blockade
               attacker {
                 id nation_name alliance_id alliance_position alliance { name }
-                last_active soldiers tanks aircraft ships spies
+                last_active soldiers tanks aircraft ships spies cities { id }
               }
               defender {
                 id nation_name alliance_id alliance_position alliance { name }
-                last_active soldiers tanks aircraft ships spies
+                last_active soldiers tanks aircraft ships spies cities { id }
               }
         """
         query = f"""
