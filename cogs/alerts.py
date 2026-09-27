@@ -174,12 +174,25 @@ class Alerts(commands.Cog):
         config = config or await database.get_alerts_config(guild_id)
         if not config or not config.get("alliance_id"):
             return
-        alliance_id = config["alliance_id"]
+        primary_alliance_id = config["alliance_id"]
         pw_client = self.bot.pw_client
 
-        members = await pw_client.get_alliance_members(alliance_id)
+        # Cover Evergreen's own alliance PLUS every alliance currently
+        # in this guild's ALLIES bloc — lets a shared coalition server
+        # receive war/espionage alerts for the whole bloc, not just us.
+        ally_rows = await database.list_coalitions(guild_id, "ALLIES")
+        alliance_ids = [primary_alliance_id] + [r["alliance_id"] for r in ally_rows if r["alliance_id"] != primary_alliance_id]
 
-        wars = await pw_client.get_active_wars(alliance_id)
+        members = []
+        wars_by_id: dict[int, dict] = {}
+        for aid in alliance_ids:
+            try:
+                members.extend(await pw_client.get_alliance_members(aid))
+                for w in await pw_client.get_active_wars(aid):
+                    wars_by_id[w["id"]] = w  # last write wins on dupes, fine since data is identical
+            except Exception as e:
+                print(f"[alerts] failed to fetch alliance {aid} for guild {guild_id}: {e}")
+        wars = list(wars_by_id.values())
 
         # A defensive war is a "counter" if OUR member (the defender)
         # currently has an active offensive war against SOMEONE IN THE
