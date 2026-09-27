@@ -107,6 +107,24 @@ class Alerts(commands.Cog):
             )
         )
 
+    @alerts_group.command(name="includeallies", description="Include ALLIES-bloc alliances in this server's war/espionage alerts")
+    @app_commands.describe(enabled="If true, alerts here cover Evergreen + every alliance in the ALLIES bloc")
+    async def include_allies(self, interaction: discord.Interaction, enabled: bool):
+        config = await database.get_alerts_config(interaction.guild_id) or {}
+        alliance_id = config.get("alliance_id")
+        if not alliance_id:
+            await interaction.response.send_message(
+                embed=embeds.error("No Alliance Set", "Set one first with /alerts alliance."), ephemeral=True
+            )
+            return
+        await database._upsert_alerts_config(interaction.guild_id, include_allied_alliances=enabled)
+        await interaction.response.send_message(
+            embed=embeds.success(
+                "Setting Updated",
+                f"This server's war/espionage alerts will {'now cover Evergreen + the ALLIES bloc' if enabled else 'now cover Evergreen only'}.",
+            )
+        )
+
     @alerts_group.command(name="list", description="Show current alert configuration")
     async def list_config(self, interaction: discord.Interaction):
         config = await database.get_alerts_config(interaction.guild_id)
@@ -177,11 +195,13 @@ class Alerts(commands.Cog):
         primary_alliance_id = config["alliance_id"]
         pw_client = self.bot.pw_client
 
-        # Cover Evergreen's own alliance PLUS every alliance currently
-        # in this guild's ALLIES bloc — lets a shared coalition server
-        # receive war/espionage alerts for the whole bloc, not just us.
-        ally_rows = await database.list_coalitions(guild_id, "ALLIES")
-        alliance_ids = [primary_alliance_id] + [r["alliance_id"] for r in ally_rows if r["alliance_id"] != primary_alliance_id]
+        # Only expand to cover ALLIES-bloc alliances if this guild has
+        # explicitly opted in (e.g. a shared coalition server). Every
+        # other guild watches its own primary alliance only.
+        alliance_ids = [primary_alliance_id]
+        if config.get("include_allied_alliances"):
+            ally_rows = await database.list_coalitions(guild_id, "ALLIES")
+            alliance_ids += [r["alliance_id"] for r in ally_rows if r["alliance_id"] != primary_alliance_id]
 
         members = []
         wars_by_id: dict[int, dict] = {}
@@ -228,16 +248,16 @@ class Alerts(commands.Cog):
         if side == "defense":
             if position == "APPLICANT":
                 return
-            if await database.is_war_alerted(war_id, "alerted_defense"):
+            if await database.is_war_alerted(guild_id, war_id, "alerted_defense"):
                 return
             channel_id = config.get("defense_channel_id")
             if not channel_id:
                 return
             await self._send_war_alert(guild_id, channel_id, war, side="defense", is_counter=is_counter)
-            await database.mark_war_alerted(war_id, "alerted_defense")
+            await database.mark_war_alerted(guild_id, war_id, "alerted_defense")
 
         elif side == "offense":
-            if await database.is_war_alerted(war_id, "alerted_offensive"):
+            if await database.is_war_alerted(guild_id, war_id, "alerted_offensive"):
                 return
             channel_id = config.get("offensive_channel_id")
             if not channel_id:
@@ -256,7 +276,7 @@ class Alerts(commands.Cog):
             await self._send_war_alert(
                 guild_id, channel_id, war, side="offense", is_dnr_violation=is_violation
             )
-            await database.mark_war_alerted(war_id, "alerted_offensive")
+            await database.mark_war_alerted(guild_id, war_id, "alerted_offensive")
 
     async def _send_war_alert(self, guild_id, channel_id, war, side, is_counter=False, is_dnr_violation=False):
         channel = self.bot.get_channel(channel_id)
@@ -328,7 +348,7 @@ class Alerts(commands.Cog):
 
         nation_id = member["id"]
         current_spies = member.get("spies", 0)
-        last_spies = await database.get_last_spies(nation_id)
+        last_spies = await database.get_last_spies(guild_id, nation_id)
 
         if last_spies is not None and current_spies < last_spies:
             channel = self.bot.get_channel(channel_id)
@@ -404,7 +424,7 @@ class Alerts(commands.Cog):
 
                 await channel.send(content=ping or None, embed=embed)
 
-        await database.set_last_spies(nation_id, current_spies)
+        await database.set_last_spies(guild_id, nation_id, current_spies)
 
 
 async def setup(bot: commands.Bot):

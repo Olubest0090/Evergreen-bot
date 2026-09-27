@@ -127,38 +127,47 @@ async def get_discord_id_for_nation(nation_id: int) -> int | None:
         return data[0]["discord_user_id"] if data else None
 
 
-# ---- seen_wars (Phase 2) ----
+# ---- seen_wars (Phase 2, per-guild) ----
+# IMPORTANT: keyed by (guild_id, war_id), NOT just war_id. Multiple
+# guilds can monitor overlapping alliance data (e.g. a shared coalition
+# server watching Evergreen + allies), and each guild needs its own
+# independent "have I alerted this yet" state — otherwise whichever
+# guild's poll runs first silently suppresses alerts for every other
+# guild watching the same war.
 
-async def is_war_alerted(war_id: int, field: str) -> bool:
+async def is_war_alerted(guild_id: int, war_id: int, field: str) -> bool:
     url = f"{_base_url}/rest/v1/seen_wars"
-    params = {"war_id": f"eq.{war_id}", "select": field}
+    params = {"guild_id": f"eq.{guild_id}", "war_id": f"eq.{war_id}", "select": field}
     async with _session.get(url, params=params) as resp:
         data = await resp.json()
         return bool(data and data[0].get(field))
 
 
-async def mark_war_alerted(war_id: int, field: str) -> None:
-    url = f"{_base_url}/rest/v1/seen_wars?on_conflict=war_id"
-    payload = {"war_id": war_id, field: True}
+async def mark_war_alerted(guild_id: int, war_id: int, field: str) -> None:
+    url = f"{_base_url}/rest/v1/seen_wars?on_conflict=guild_id,war_id"
+    payload = {"guild_id": guild_id, "war_id": war_id, field: True}
     headers = {"Prefer": "resolution=merge-duplicates,return=minimal"}
     async with _session.post(url, json=payload, headers=headers) as resp:
         if resp.status not in (200, 201, 204):
             raise RuntimeError(f"Supabase error {resp.status}: {await resp.text()}")
 
 
-# ---- nation_spy_tracking (Phase 2) ----
+# ---- nation_spy_tracking (Phase 2, per-guild) ----
+# Same reasoning as seen_wars above — spy-count baselines must be
+# tracked separately per guild, or the second guild to poll never sees
+# a delta because the first guild already updated the stored count.
 
-async def get_last_spies(nation_id: int) -> int | None:
+async def get_last_spies(guild_id: int, nation_id: int) -> int | None:
     url = f"{_base_url}/rest/v1/nation_spy_tracking"
-    params = {"nation_id": f"eq.{nation_id}", "select": "last_known_spies"}
+    params = {"guild_id": f"eq.{guild_id}", "nation_id": f"eq.{nation_id}", "select": "last_known_spies"}
     async with _session.get(url, params=params) as resp:
         data = await resp.json()
         return data[0]["last_known_spies"] if data else None
 
 
-async def set_last_spies(nation_id: int, spies: int) -> None:
-    url = f"{_base_url}/rest/v1/nation_spy_tracking?on_conflict=nation_id"
-    payload = {"nation_id": nation_id, "last_known_spies": spies}
+async def set_last_spies(guild_id: int, nation_id: int, spies: int) -> None:
+    url = f"{_base_url}/rest/v1/nation_spy_tracking?on_conflict=guild_id,nation_id"
+    payload = {"guild_id": guild_id, "nation_id": nation_id, "last_known_spies": spies}
     headers = {"Prefer": "resolution=merge-duplicates,return=minimal"}
     async with _session.post(url, json=payload, headers=headers) as resp:
         if resp.status not in (200, 201, 204):
