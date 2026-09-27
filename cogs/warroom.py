@@ -201,6 +201,7 @@ class WarRoom(commands.Cog):
         if member:
             try:
                 await channel.set_permissions(member, view_channel=True, send_messages=True)
+                await channel.send(f"{member.mention} you're now in this war room — coordinate here.")
             except discord.HTTPException:
                 pass
         await database.add_room_participant(channel.id, discord_user_id)
@@ -214,6 +215,12 @@ class WarRoom(commands.Cog):
         channel_name = f"c{num_cities}-{enemy_name}"[:90]
 
         overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=False)}
+        ma_role_id = await database.get_guild_role(guild_id, "MA")
+        if ma_role_id:
+            ma_role = guild.get_role(ma_role_id)
+            if ma_role:
+                overwrites[ma_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+
         channel = await guild.create_text_channel(channel_name, category=category, overwrites=overwrites)
         await database.create_war_room(guild_id, enemy["id"], channel.id, category.id)
 
