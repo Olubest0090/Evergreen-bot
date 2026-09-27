@@ -55,9 +55,10 @@ def nation_block(nation: dict, resistance, maps) -> str:
     position = (nation.get("alliance_position") or "").title() or "None"
     active = format_duration(nation.get("last_active"))
     nation_link = f"https://politicsandwar.com/nation/id={nation_id}" if nation_id else ""
+    num_cities = len(nation.get("cities") or [])
 
     lines = [
-        f"[**{name}**]({nation_link}) — *{alliance_name}* — {active} — {position}",
+        f"[**{name}**]({nation_link}) — *{alliance_name}* — {active} — {position} — {num_cities} cities",
         military_line(nation),
     ]
     if resistance is not None:
