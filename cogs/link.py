@@ -2,11 +2,9 @@
 /link — connects a Discord member to their Politics & War nation.
 /whois — shows a full nation profile card for a linked member.
 """
-
 import asyncio
 import re
 from datetime import datetime, timezone
-
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -18,7 +16,6 @@ NATION_URL_PATTERN = re.compile(r"nation[/=]id=(\d+)|nation/(\d+)")
 
 async def resolve_nation(pw_client, nation_input: str) -> dict | None:
     text = nation_input.strip()
-
     if text.isdigit():
         return await pw_client.get_nation(int(text))
 
@@ -26,14 +23,12 @@ async def resolve_nation(pw_client, nation_input: str) -> dict | None:
     if url_match:
         nation_id = int(url_match.group(1) or url_match.group(2))
         return await pw_client.get_nation(nation_id)
-
     return await pw_client.get_nation_by_name(text)
 
 
 async def user_can_link_others(bot: commands.Bot, interaction: discord.Interaction) -> bool:
     if interaction.permissions.administrator:
         return True
-
     ma_role_id = await database.get_guild_role(interaction.guild_id, "MA")
     if not ma_role_id:
         return False
@@ -62,6 +57,19 @@ def format_duration(last_active_iso: str | None) -> str:
         return "unknown"
 
 
+def format_timer_seconds(seconds: int | float | None) -> str:
+    if not seconds or seconds <= 0:
+        return "Ready"
+    hours, rem = divmod(int(seconds), 3600)
+    minutes = rem // 60
+    if hours >= 24:
+        days, hours = divmod(hours, 24)
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
+
+
 def build_nation_embed(nation: dict, off_count: int = 0, def_count: int = 0) -> discord.Embed:
     nation_id = nation["id"]
     name = nation.get("nation_name", "Unknown")
@@ -74,8 +82,7 @@ def build_nation_embed(nation: dict, off_count: int = 0, def_count: int = 0) -> 
     num_cities = len(nation.get("cities") or [])
 
     # Base offensive slots is 5; pirate economy raises it to 6, and
-    # advanced pirate economy raises it to 7. Defensive slots are always
-    # a fixed 3 regardless of projects.
+    # advanced pirate economy raises it to 7. Defensive slots are always 3.
     if nation.get("advanced_pirate_economy"):
         max_off = 7
     elif nation.get("pirate_economy"):
@@ -87,16 +94,20 @@ def build_nation_embed(nation: dict, off_count: int = 0, def_count: int = 0) -> 
     domestic_policy = (nation.get("domestic_policy") or "None").replace("_", " ").title()
     war_policy = (nation.get("war_policy") or "None").replace("_", " ").title()
 
+    # Revenue, Timers & Projects
+    gni = nation.get("gross_national_income", 0) or 0
+    city_timer = format_timer_seconds(nation.get("city_timer"))
+    color_timer = format_timer_seconds(nation.get("color_timer"))
+    project_timer = format_timer_seconds(nation.get("project_timer"))
+    projects_list = nation.get("projects", []) or []
+    project_count = len(projects_list) if isinstance(projects_list, list) else 0
+
     status_parts = []
     if nation.get("vacation_mode_turns", 0) > 0:
         status_parts.append(f"🌴 Vacation ({nation['vacation_mode_turns']} turns)")
     if nation.get("beige_turns", 0) > 0:
         status_parts.append(f"🔶 Beige ({nation['beige_turns']} turns)")
 
-    # naval_blockade is an ID pointing to WHICHEVER side currently holds
-    # the blockade — not a simple yes/no flag. It can be either party in
-    # either an offensive or defensive war. We only want to surface it
-    # when the ENEMY holds it over this nation, not the reverse.
     blockading_nations = []
     all_wars = [
         (war, war.get("defender") or {"id": war.get("def_id")})
@@ -113,6 +124,7 @@ def build_nation_embed(nation: dict, off_count: int = 0, def_count: int = 0) -> 
             and str(blockade_holder_id) == str(enemy.get("id"))
         ):
             blockading_nations.append(enemy)
+
     if blockading_nations:
         links = ", ".join(
             f"[{b.get('nation_name', 'Unknown')}](https://politicsandwar.com/nation/id={b.get('id')})"
@@ -134,6 +146,9 @@ def build_nation_embed(nation: dict, off_count: int = 0, def_count: int = 0) -> 
         f"**Color Bloc:** {color}\n"
         f"**Domestic Policy:** {domestic_policy} | **War Policy:** {war_policy}\n"
         f"**Cities:** {num_cities} | **Score:** {score:,.2f}\n"
+        f"**Revenue (GNI):** ${gni:,.2f}\n"
+        f"**Timers:** City: `{city_timer}` | Color: `{color_timer}` | Project: `{project_timer}`\n"
+        f"**Projects Built:** {project_count}\n"
         f"**War Slots:** Offense {off_count}/{max_off} · Defense {def_count}/{max_def}\n"
         f"**Last Active:** {format_duration(nation.get('last_active'))}\n"
         f"**Status:** {status}\n\n"
@@ -158,10 +173,6 @@ class Link(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
-        """When someone joins, check if their Discord username matches
-        a stored username on any alliance nation, and auto-link them.
-        This works even where bulk /autolink can't, since it only needs
-        this one member object — no guild-wide cache/chunk required."""
         config = await database.get_alerts_config(member.guild.id)
         alliance_id = config.get("alliance_id") if config else None
         if not alliance_id:
@@ -192,7 +203,7 @@ class Link(commands.Cog):
                             f"if this was wrong."
                         )
                     except discord.Forbidden:
-                        pass  # DMs closed — link still succeeded, just no notice sent
+                        pass
                 except Exception:
                     pass
                 return
@@ -205,7 +216,6 @@ class Link(commands.Cog):
     async def link(self, interaction: discord.Interaction, nation: str, member: discord.Member = None):
         await interaction.response.defer()
         target = member or interaction.user
-
         if target.id != interaction.user.id:
             if not await user_can_link_others(self.bot, interaction):
                 await interaction.followup.send(
@@ -303,7 +313,6 @@ class Link(commands.Cog):
 
         await interaction.followup.send(embed=build_nation_embed(nation, off_count, def_count))
 
-
     @app_commands.command(
         name="autolink",
         description="Bulk-link every alliance member by matching P&W's stored Discord username",
@@ -339,9 +348,6 @@ class Link(commands.Cog):
             await interaction.followup.send(embed=embeds.error("Lookup Failed", f"P&W API error: `{e}`"))
             return
 
-        # Fetch members directly via Discord's REST API rather than
-        # relying on the gateway member cache/chunk() — more reliable
-        # regardless of whatever's causing the cache to under-populate.
         try:
             guild_members = await asyncio.wait_for(
                 self._fetch_all_members(interaction.guild), timeout=30
@@ -363,12 +369,6 @@ class Link(commands.Cog):
             return
 
         def normalize(s: str) -> str:
-            # Always strip anything after '#' — modern Discord usernames
-            # have no discriminator, but P&W profiles may still store an
-            # old-style tag (legacy "name#1234" or the "name#0" that
-            # Discord's own migration left on many old-format profiles).
-            # Comparing bare usernames only avoids both cases silently
-            # failing to match.
             bare = s.strip().lower().lstrip("@").split("#")[0]
             return bare
 
@@ -385,7 +385,6 @@ class Link(commands.Cog):
             if not discord_tag or not discord_tag.strip():
                 skipped_no_discord.append(nation["nation_name"])
                 continue
-
             match = member_lookup.get(normalize(discord_tag))
             if not match:
                 not_found.append(f"{nation['nation_name']} (`{discord_tag}`)")
