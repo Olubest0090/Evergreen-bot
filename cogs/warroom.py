@@ -42,10 +42,33 @@ def is_inactive(last_active_iso: str | None, days: int = INACTIVITY_CUTOFF_DAYS)
         return False
 
 
+async def get_our_nations_for_enemy(bot: commands.Bot, guild_id: int, enemy_nation_id: int) -> list[dict]:
+    """Re-derives, fresh each call, which Evergreen/ally nations are
+    currently fighting this specific enemy — used both when creating a
+    room and when the Update button is pressed, so it always reflects
+    who's actually in the fight right now."""
+    config = await database.get_alerts_config(guild_id)
+    alliance_id = config.get("alliance_id") if config else None
+    if not alliance_id:
+        return []
+    try:
+        wars = await bot.pw_client.get_active_wars(alliance_id)
+    except Exception:
+        return []
+    result = []
+    for war in wars:
+        enemy = war.get("attacker") if war.get("_side") == "defense" else war.get("defender")
+        our_nation = war.get("defender") if war.get("_side") == "defense" else war.get("attacker")
+        if enemy and enemy.get("id") == enemy_nation_id and our_nation:
+            result.append(our_nation)
+    return result
+
+
 class WarRoomUpdateView(discord.ui.View):
-    def __init__(self, bot: commands.Bot, enemy_nation_id: int):
+    def __init__(self, bot: commands.Bot, guild_id: int, enemy_nation_id: int):
         super().__init__(timeout=None)
         self.bot = bot
+        self.guild_id = guild_id
         self.enemy_nation_id = enemy_nation_id
 
     @discord.ui.button(label="Update", style=discord.ButtonStyle.primary, custom_id="warroom_update")
@@ -60,16 +83,27 @@ class WarRoomUpdateView(discord.ui.View):
             await interaction.followup.send("This nation no longer exists.", ephemeral=True)
             return
 
-        embed = build_room_pin_embed(enemy)
+        our_nations = await get_our_nations_for_enemy(self.bot, self.guild_id, self.enemy_nation_id)
+        embed = build_room_pin_embed(enemy, our_nations)
         await interaction.message.edit(embed=embed, view=self)
         await interaction.followup.send("Updated.", ephemeral=True)
 
 
-def build_room_pin_embed(enemy: dict) -> discord.Embed:
+def build_room_pin_embed(enemy: dict, our_nations: list[dict] = None) -> discord.Embed:
+    our_nations = our_nations or []
     embed = embeds.info(f"War Room: {enemy.get('nation_name', 'Unknown')}")
     embed.url = f"https://politicsandwar.com/nation/id={enemy.get('id')}"
-    block = nation_block(enemy, None, None)
-    embed.description = f"{block}\n\n*Tap Update for the latest figures.*"
+
+    parts = [f"**Enemy:**\n{nation_block(enemy, None, None)}"]
+
+    if our_nations:
+        our_blocks = "\n\n".join(nation_block(n, None, None) for n in our_nations)
+        parts.append(f"**Our Members In This Fight:**\n{our_blocks}")
+    else:
+        parts.append("*No members currently tracked in this fight.*")
+
+    parts.append("*Tap Update for the latest figures.*")
+    embed.description = "\n\n".join(parts)
     return embed
 
 
@@ -92,6 +126,7 @@ ATTACK_TYPE_LABELS = {
 class WarRoom(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._missing_cycles: dict[tuple[int, int], int] = {}
         self.warroom_loop.start()
 
     def cog_unload(self):
@@ -166,8 +201,9 @@ class WarRoom(commands.Cog):
             await interaction.followup.send(embed=embeds.error("Nation Not Found", "This nation no longer exists."))
             return
 
-        embed = build_room_pin_embed(enemy)
-        view = WarRoomUpdateView(self.bot, room["enemy_nation_id"])
+        our_nations = await get_our_nations_for_enemy(self.bot, interaction.guild_id, room["enemy_nation_id"])
+        embed = build_room_pin_embed(enemy, our_nations)
+        view = WarRoomUpdateView(self.bot, interaction.guild_id, room["enemy_nation_id"])
         msg = await interaction.followup.send(embed=embed, view=view)
         try:
             await msg.pin()
@@ -224,8 +260,9 @@ class WarRoom(commands.Cog):
         channel = await guild.create_text_channel(channel_name, category=category, overwrites=overwrites)
         await database.create_war_room(guild_id, enemy["id"], channel.id, category.id)
 
-        embed = build_room_pin_embed(enemy)
-        view = WarRoomUpdateView(self.bot, enemy["id"])
+        our_nations = await get_our_nations_for_enemy(self.bot, guild_id, enemy["id"])
+        embed = build_room_pin_embed(enemy, our_nations)
+        view = WarRoomUpdateView(self.bot, guild_id, enemy["id"])
         msg = await channel.send(embed=embed, view=view)
         try:
             await msg.pin()
@@ -277,18 +314,33 @@ class WarRoom(commands.Cog):
                 if discord_id:
                     await self._grant_access(channel, discord_id)
 
+        # Grace period: an enemy must be missing for 3 CONSECUTIVE
+        # sync cycles (~6 min) before we close its room. A single
+        # missing cycle is treated as likely API flakiness/lag rather
+        # than the war actually ending, to stop rooms from flapping
+        # closed-then-recreated on a transient data hiccup.
+        MISSING_THRESHOLD = 3
         closed = 0
         existing_rooms = await database.get_all_war_rooms(guild_id)
         for room in existing_rooms:
-            if room["enemy_nation_id"] not in by_enemy:
-                channel = guild.get_channel(room["channel_id"])
-                if channel:
-                    try:
-                        await channel.delete(reason="War ended or enemy went inactive")
-                    except discord.HTTPException:
-                        pass
-                await database.delete_war_room(guild_id, room["enemy_nation_id"])
-                closed += 1
+            key = (guild_id, room["enemy_nation_id"])
+            if room["enemy_nation_id"] in by_enemy:
+                self._missing_cycles.pop(key, None)
+                continue
+
+            self._missing_cycles[key] = self._missing_cycles.get(key, 0) + 1
+            if self._missing_cycles[key] < MISSING_THRESHOLD:
+                continue  # not enough consecutive misses yet — leave it alone
+
+            channel = guild.get_channel(room["channel_id"])
+            if channel:
+                try:
+                    await channel.delete(reason="War ended or enemy went inactive")
+                except discord.HTTPException:
+                    pass
+            await database.delete_war_room(guild_id, room["enemy_nation_id"])
+            self._missing_cycles.pop(key, None)
+            closed += 1
 
         return created, closed
 
