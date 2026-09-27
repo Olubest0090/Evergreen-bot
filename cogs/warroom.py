@@ -322,24 +322,33 @@ class WarRoom(commands.Cog):
         MISSING_THRESHOLD = 3
         closed = 0
         existing_rooms = await database.get_all_war_rooms(guild_id)
+        
+        # Force all active enemy IDs to int for safe lookups
+        active_enemy_ids = {int(eid) for eid in by_enemy.keys()}
+
         for room in existing_rooms:
-            key = (guild_id, room["enemy_nation_id"])
-            if room["enemy_nation_id"] in by_enemy:
-                self._missing_cycles.pop(key, None)
+            enemy_id = int(room["enemy_nation_id"])
+            
+            # If enemy is actively fighting, reset missing count in Supabase
+            if enemy_id in active_enemy_ids:
+                if room.get("missing_count", 0) > 0:
+                    await database.update_war_room_missing_count(guild_id, enemy_id, 0)
                 continue
 
-            self._missing_cycles[key] = self._missing_cycles.get(key, 0) + 1
-            if self._missing_cycles[key] < MISSING_THRESHOLD:
-                continue  # not enough consecutive misses yet — leave it alone
+            # Enemy missing: increment persistent count
+            current_missing = room.get("missing_count", 0) + 1
+            if current_missing < MISSING_THRESHOLD:
+                await database.update_war_room_missing_count(guild_id, enemy_id, current_missing)
+                continue
 
-            channel = guild.get_channel(room["channel_id"])
+            # Grace period expired (3 consecutive fails stored in DB) — safely close room
+            channel = guild.get_channel(int(room["channel_id"]))
             if channel:
                 try:
-                    await channel.delete(reason="War ended or enemy went inactive")
+                    await channel.delete(reason="War ended: missing for 3 consecutive polls")
                 except discord.HTTPException:
                     pass
-            await database.delete_war_room(guild_id, room["enemy_nation_id"])
-            self._missing_cycles.pop(key, None)
+            await database.delete_war_room(guild_id, enemy_id)
             closed += 1
 
         return created, closed

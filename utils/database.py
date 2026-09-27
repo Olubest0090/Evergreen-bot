@@ -404,3 +404,13 @@ async def list_brackets(guild_id: int) -> list[dict]:
     async with _session.get(url, params=params) as resp:
         return await resp.json()
 
+
+
+async def update_war_room_missing_count(guild_id: int, enemy_nation_id: int, missing_count: int) -> None:
+    url = f"{_base_url}/rest/v1/war_rooms"
+    params = {"guild_id": f"eq.{guild_id}", "enemy_nation_id": f"eq.{enemy_nation_id}"}
+    payload = {"missing_count": missing_count}
+    headers = {"Prefer": "return=minimal"}
+    async with _session.patch(url, params=params, json=payload, headers=headers) as resp:
+        if resp.status not in (200, 204):
+            raise RuntimeError(f"Supabase error {resp.status}: {await resp.text()}")
