@@ -154,6 +154,71 @@ ATTACK_RESULTS = {
 }
 
 
+ATTACK_LABELS.update({
+    "NAVALVAIR": "🚢 Naval Attack (Aircraft)",
+    "NAVALVGROUND": "🚢 Naval Attack (Ground)",
+    "NAVALVSHIPS": "🚢 Naval Attack (Ships)",
+})
+
+NON_COMBAT_ATTACKS = {"FORTIFY", "PEACE", "VICTORY", "ALLIANCELOOT"}
+
+
+def build_attack_embed(war: dict, attack: dict, when) -> discord.Embed:
+    attacker = war.get("attacker") or {}
+    defender = war.get("defender") or {}
+
+    # The attack record only carries IDs, so work out which of the two
+    # nations in this war actually made it.
+    if str(attack.get("att_id")) == str(attacker.get("id")):
+        actor, target = attacker, defender
+    else:
+        actor, target = defender, attacker
+
+    # Green when our member made the attack, red when the enemy did.
+    our_nation = attacker if war.get("_side") == "offense" else defender
+    ours = str(actor.get("id")) == str(our_nation.get("id"))
+
+    def link(n):
+        return f"[{n.get('nation_name', '?')}](https://politicsandwar.com/nation/id={n.get('id')})"
+
+    def ally(n):
+        return (n.get("alliance") or {}).get("name") or "No alliance"
+
+    attack_type = attack.get("type") or "Attack"
+    label = ATTACK_LABELS.get(attack_type, f"⚔️ {attack_type}")
+
+    lines = [f"{link(actor)} of **{ally(actor)}** → {link(target)} of **{ally(target)}**"]
+
+    if attack_type not in NON_COMBAT_ATTACKS:
+        lines.append(f"Result: **{ATTACK_RESULTS.get(attack.get('success'), 'Unknown')}**")
+
+        loot = attack.get("moneystolen") or 0
+        if loot > 0:
+            lines.append(f"Looted: **${loot:,.0f}**")
+
+        infra = attack.get("infradestroyed") or 0
+        if infra > 0:
+            value = attack.get("infra_destroyed_value") or 0
+            before = attack.get("city_infra_before") or 0
+            lines.append(
+                f"Infrastructure destroyed: **{infra:,.2f}** (worth ${value:,.0f}), "
+                f"previously {before:,.2f}"
+            )
+
+        lost = attack.get("improvementslost") or 0
+        if lost > 0:
+            lines.append(f"Improvements destroyed: **{lost}**")
+
+    embed = discord.Embed(
+        title=label,
+        description="\n".join(lines),
+        color=0x2E7D32 if ours else 0xC62828,
+        timestamp=when,
+    )
+    embed.set_footer(text=f"{embeds.FOOTER_TEXT} · {'our attack' if ours else 'enemy attack'}")
+    return embed
+
+
 class WarRoom(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -420,8 +485,7 @@ class WarRoom(commands.Cog):
         wars = await self.bot.pw_client.get_active_wars(alliance_id)
 
         # The P&W API returns IDs as text while our database stores them
-        # as numbers, so everything is keyed as int here. Mixing the two
-        # made this lookup silently match nothing.
+        # as numbers, so everything is keyed as int here.
         wars_by_enemy: dict[int, list] = {}
         for war in wars:
             enemy = war.get("attacker") if war.get("_side") == "defense" else war.get("defender")
@@ -456,21 +520,18 @@ class WarRoom(commands.Cog):
                         continue
                     fresh.append((when, war, attack))
 
+            if not fresh:
+                continue
+
             fresh.sort(key=lambda item: item[0])
-            for when, war, attack in fresh[:ATTACK_FEED_MAX_PER_CYCLE]:
-                attack_type = attack.get("type") or "Attack"
-                label = ATTACK_LABELS.get(attack_type, f"⚔️ {attack_type}")
-                result = ATTACK_RESULTS.get(attack.get("success"), "Unknown result")
-                att_name = (war.get("attacker") or {}).get("nation_name", "?")
-                def_name = (war.get("defender") or {}).get("nation_name", "?")
-                try:
-                    await channel.send(
-                        f"**{label}** — {result}\n"
-                        f"`{att_name}` vs `{def_name}` · <t:{int(when.timestamp())}:R>"
-                    )
-                except discord.HTTPException as e:
-                    print(f"[warroom] failed to post attack {attack['id']}: {e}")
-                    continue
+            batch = fresh[:ATTACK_FEED_MAX_PER_CYCLE]
+            embeds_to_send = [build_attack_embed(war, attack, when) for when, war, attack in batch]
+            try:
+                await channel.send(embeds=embeds_to_send)
+            except discord.HTTPException as e:
+                print(f"[warroom] failed to post attack batch in {channel.name}: {e}")
+                continue
+            for _, _, attack in batch:
                 await database.mark_attack_seen(int(attack["id"]))
 
 

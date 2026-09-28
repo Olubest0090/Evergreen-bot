@@ -237,10 +237,10 @@ class PWApiClient:
         return wars[0] if wars else None
 
     async def get_war_attacks(self, war_id: int) -> list[dict]:
-        """Minimal attack feed — kept intentionally small since exact
-        WarAttack field names (casualties, loot breakdown, etc.) are
-        unverified against the live schema. Expand once this confirmed
-        query works, rather than guessing many fields at once."""
+        """Attack feed for one war. Every field below was verified
+        against the live API with a standalone test. Casualty fields
+        (attcas1/2, defcas1/2) exist but looked empty in testing, so
+        they are deliberately not requested."""
         query = """
         query($id: [Int]) {
           wars(id: $id, first: 1) {
@@ -251,6 +251,15 @@ class PWApiClient:
                 date
                 type
                 success
+                att_id
+                def_id
+                victor
+                moneystolen
+                infradestroyed
+                infra_destroyed_value
+                city_infra_before
+                improvementslost
+                resistance_eliminated
               }
             }
           }
@@ -258,7 +267,7 @@ class PWApiClient:
         """
         data = await self._query(query, {"id": [war_id]})
         wars = data["wars"]["data"]
-        return wars[0].get("attacks") or [] if wars else []
+        return (wars[0].get("attacks") or []) if wars else []
 
     async def get_nations_in_score_range(self, min_score: float, max_score: float) -> list[dict]:
         query = """
