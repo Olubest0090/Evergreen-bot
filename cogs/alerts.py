@@ -40,6 +40,18 @@ def format_duration(last_active_iso: str | None) -> str:
         return "unknown"
 
 
+def is_inactive(last_active_iso: str | None, days: int = 7) -> bool:
+    # Missing or unreadable data counts as active, so an alert is
+    # never hidden because the API left a field out.
+    if not last_active_iso:
+        return False
+    try:
+        last = datetime.fromisoformat(last_active_iso.replace("Z", "+00:00"))
+        return (datetime.now(timezone.utc) - last).days >= days
+    except Exception:
+        return False
+
+
 def military_line(nation: dict) -> str:
     return (
         f"`{nation.get('soldiers', 0)} 💂 | {nation.get('tanks', 0)} ⚙️ | "
@@ -245,6 +257,13 @@ class Alerts(commands.Cog):
         war_id = war["id"]
         side = war.get("_side")
         position = war.get("_our_position") or "APPLICANT"
+
+        # Sphere Bloc only (servers that include allied alliances):
+        # skip DEFENSIVE alerts for members inactive 7+ days. Not
+        # marked as alerted, so it fires if they log back in mid-war.
+        if side == "defense" and config.get("include_allied_alliances"):
+            if is_inactive((war.get("defender") or {}).get("last_active")):
+                return
 
         if side == "defense":
             if position == "APPLICANT":
