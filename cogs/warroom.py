@@ -123,6 +123,37 @@ ATTACK_TYPE_LABELS = {
 }
 
 
+ATTACK_FEED_MAX_AGE_MINUTES = 30
+ATTACK_FEED_MAX_PER_CYCLE = 10
+
+ATTACK_LABELS = {
+    "GROUND": "⚔️ Ground Attack",
+    "AIRVAIR": "✈️ Airstrike (Aircraft)",
+    "AIRVINFRA": "✈️ Airstrike (Infrastructure)",
+    "AIRVMONEY": "✈️ Airstrike (Money)",
+    "AIRVSHIPS": "✈️ Airstrike (Ships)",
+    "AIRVSOLDIERS": "✈️ Airstrike (Soldiers)",
+    "AIRVTANKS": "✈️ Airstrike (Tanks)",
+    "NAVAL": "🚢 Naval Attack",
+    "NAVALVINFRA": "🚢 Naval Attack (Infrastructure)",
+    "MISSILE": "🚀 Missile Strike",
+    "MISSILEFAIL": "🚀 Missile Strike (Failed)",
+    "NUKE": "☢️ Nuclear Strike",
+    "NUKEFAIL": "☢️ Nuclear Strike (Failed)",
+    "FORTIFY": "🛡️ Fortify",
+    "PEACE": "🕊️ Peace Offer",
+    "VICTORY": "🏁 Victory",
+    "ALLIANCELOOT": "💰 Alliance Loot",
+}
+
+ATTACK_RESULTS = {
+    0: "Utter Failure",
+    1: "Pyrrhic Victory",
+    2: "Moderate Success",
+    3: "Immense Triumph",
+}
+
+
 class WarRoom(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -378,6 +409,8 @@ class WarRoom(commands.Cog):
         await self.bot.wait_until_ready()
 
     async def _track_attacks_for_guild(self, guild_id: int, guild: discord.Guild, alliance_id: int | None):
+        from datetime import datetime, timezone, timedelta
+
         if not alliance_id:
             return
         rooms = await database.get_all_war_rooms(guild_id)
@@ -385,29 +418,61 @@ class WarRoom(commands.Cog):
             return
 
         wars = await self.bot.pw_client.get_active_wars(alliance_id)
+
+        # The P&W API returns IDs as text while our database stores them
+        # as numbers, so everything is keyed as int here. Mixing the two
+        # made this lookup silently match nothing.
         wars_by_enemy: dict[int, list] = {}
         for war in wars:
             enemy = war.get("attacker") if war.get("_side") == "defense" else war.get("defender")
             if enemy and enemy.get("id"):
-                wars_by_enemy.setdefault(enemy["id"], []).append(war)
+                wars_by_enemy.setdefault(int(enemy["id"]), []).append(war)
+
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=ATTACK_FEED_MAX_AGE_MINUTES)
 
         for room in rooms:
-            channel = guild.get_channel(room["channel_id"])
+            channel = guild.get_channel(int(room["channel_id"]))
             if not channel:
                 continue
-            for war in wars_by_enemy.get(room["enemy_nation_id"], []):
+
+            fresh = []
+            for war in wars_by_enemy.get(int(room["enemy_nation_id"]), []):
                 try:
                     attacks = await self.bot.pw_client.get_war_attacks(war["id"])
                 except Exception as e:
                     print(f"[warroom] get_war_attacks failed for war {war['id']}: {e}")
                     continue
+
                 for attack in attacks:
-                    if await database.is_attack_seen(attack["id"]):
+                    try:
+                        when = datetime.fromisoformat(attack["date"].replace("Z", "+00:00"))
+                    except Exception:
                         continue
-                    label = ATTACK_TYPE_LABELS.get(attack.get("type"), attack.get("type", "Attack"))
-                    success = attack.get("success", "Unknown")
-                    await channel.send(f"**{label}** — Result: `{success}`")
-                    await database.mark_attack_seen(attack["id"])
+                    # Old history is skipped without being marked, so a
+                    # new room never gets flooded with past attacks.
+                    if when < cutoff:
+                        continue
+                    if await database.is_attack_seen(int(attack["id"])):
+                        continue
+                    fresh.append((when, war, attack))
+
+            fresh.sort(key=lambda item: item[0])
+            for when, war, attack in fresh[:ATTACK_FEED_MAX_PER_CYCLE]:
+                attack_type = attack.get("type") or "Attack"
+                label = ATTACK_LABELS.get(attack_type, f"⚔️ {attack_type}")
+                result = ATTACK_RESULTS.get(attack.get("success"), "Unknown result")
+                att_name = (war.get("attacker") or {}).get("nation_name", "?")
+                def_name = (war.get("defender") or {}).get("nation_name", "?")
+                try:
+                    await channel.send(
+                        f"**{label}** — {result}\n"
+                        f"`{att_name}` vs `{def_name}` · <t:{int(when.timestamp())}:R>"
+                    )
+                except discord.HTTPException as e:
+                    print(f"[warroom] failed to post attack {attack['id']}: {e}")
+                    continue
+                await database.mark_attack_seen(int(attack["id"]))
+
 
 
 async def setup(bot: commands.Bot):
