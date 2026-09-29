@@ -14,6 +14,10 @@ from utils import database, embeds
 NATION_URL_PATTERN = re.compile(r"nation[/=]id=(\d+)|nation/(\d+)")
 
 
+
+def normalize_discord_tag(s: str) -> str:
+    return s.strip().lower().lstrip("@").split("#")[0]
+
 async def resolve_nation(pw_client, nation_input: str) -> dict | None:
     text = nation_input.strip()
     if text.isdigit():
@@ -233,6 +237,38 @@ class Link(commands.Cog):
                 embed=embeds.error("Nation Not Found", f"Couldn't find a nation matching `{nation}`.")
             )
             return
+
+        # Block double-claiming: this nation must not already belong to
+        # a different Discord account.
+        existing_owner_id = await database.get_discord_id_for_nation(nation_data["id"])
+        if existing_owner_id and existing_owner_id != target.id:
+            await interaction.followup.send(
+                embed=embeds.error(
+                    "Already Linked",
+                    f"**{nation_data['nation_name']}** is already linked to <@{existing_owner_id}>. "
+                    f"Unlink that account first with `/unlink` before linking it here.",
+                )
+            )
+            return
+
+        # Self-linking must match the Discord tag the nation itself has
+        # on file, so people cannot claim someone else's nation. This
+        # check is skipped when Admin/MA links another member.
+        if target.id == interaction.user.id:
+            stored_tag = nation_data.get("discord")
+            candidates = {normalize_discord_tag(target.name)}
+            if target.global_name:
+                candidates.add(normalize_discord_tag(target.global_name))
+            if not stored_tag or normalize_discord_tag(stored_tag) not in candidates:
+                await interaction.followup.send(
+                    embed=embeds.error(
+                        "Discord Tag Mismatch",
+                        f"**{nation_data['nation_name']}**'s P&W profile has "
+                        f"`{stored_tag or 'no Discord set'}` on file, which doesn't match your account. "
+                        f"Update your Discord username on your P&W nation page, or ask an Admin/MA to link it for you.",
+                    )
+                )
+                return
 
         try:
             await database.link_nation(interaction.guild_id, target.id, nation_data["id"])
