@@ -241,6 +241,14 @@ class Link(commands.Cog):
         # Block double-claiming: this nation must not already belong to
         # a different Discord account.
         existing_owner_id = await database.get_discord_id_for_nation(nation_data["id"])
+        if existing_owner_id and existing_owner_id == target.id:
+            await interaction.followup.send(
+                embed=embeds.success(
+                    "Already Linked",
+                    f"{target.mention} is already linked to **{nation_data['nation_name']}**. Nothing changed.",
+                )
+            )
+            return
         if existing_owner_id and existing_owner_id != target.id:
             await interaction.followup.send(
                 embed=embeds.error(
