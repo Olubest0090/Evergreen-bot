@@ -516,7 +516,7 @@ class WarRoom(commands.Cog):
                     # new room never gets flooded with past attacks.
                     if when < cutoff:
                         continue
-                    if await database.is_attack_seen(int(attack["id"])):
+                    if await database.is_attack_seen(guild_id, int(attack["id"])):
                         continue
                     fresh.append((when, war, attack))
 
@@ -532,7 +532,7 @@ class WarRoom(commands.Cog):
                 print(f"[warroom] failed to post attack batch in {channel.name}: {e}")
                 continue
             for _, _, attack in batch:
-                await database.mark_attack_seen(int(attack["id"]))
+                await database.mark_attack_seen(guild_id, int(attack["id"]))
 
 
 

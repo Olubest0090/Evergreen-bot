@@ -282,19 +282,22 @@ async def get_warroom_settings(guild_id: int) -> dict | None:
         return data[0] if data else None
 
 
-# ---- seen_attacks (Phase 4) ----
+# ---- seen_attacks (Phase 4, per-guild) ----
+# Keyed by (guild_id, attack_id), not just attack_id. Two servers can
+# each have a war room for the same enemy nation, and each server's
+# room needs its own independent "have I posted this attack yet" state.
 
-async def is_attack_seen(attack_id: int) -> bool:
+async def is_attack_seen(guild_id: int, attack_id: int) -> bool:
     url = f"{_base_url}/rest/v1/seen_attacks"
-    params = {"attack_id": f"eq.{attack_id}", "select": "attack_id"}
+    params = {"guild_id": f"eq.{guild_id}", "attack_id": f"eq.{attack_id}", "select": "attack_id"}
     async with _session.get(url, params=params) as resp:
         data = await resp.json()
         return bool(data)
 
 
-async def mark_attack_seen(attack_id: int) -> None:
-    url = f"{_base_url}/rest/v1/seen_attacks?on_conflict=attack_id"
-    payload = {"attack_id": attack_id}
+async def mark_attack_seen(guild_id: int, attack_id: int) -> None:
+    url = f"{_base_url}/rest/v1/seen_attacks?on_conflict=guild_id,attack_id"
+    payload = {"guild_id": guild_id, "attack_id": attack_id}
     headers = {"Prefer": "resolution=merge-duplicates,return=minimal"}
     async with _session.post(url, json=payload, headers=headers) as resp:
         if resp.status not in (200, 201, 204):
