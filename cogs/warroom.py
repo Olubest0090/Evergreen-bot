@@ -502,7 +502,7 @@ class WarRoom(commands.Cog):
             fresh = []
             for war in wars_by_enemy.get(int(room["enemy_nation_id"]), []):
                 try:
-                    attacks = await self.bot.pw_client.get_war_attacks(war["id"])
+                    attacks = await self.bot.pw_client.get_war_attacks(int(war["id"]))
                 except Exception as e:
                     print(f"[warroom] get_war_attacks failed for war {war['id']}: {e}")
                     continue
