@@ -12,6 +12,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from utils import database, embeds
+from cogs.counter import qualifies, military_total
 
 CHANNEL_TYPE_CHOICES = [
     app_commands.Choice(name="Defensive Wars", value="defense_channel_id"),
@@ -275,6 +276,7 @@ class Alerts(commands.Cog):
                 return
             await self._send_war_alert(guild_id, channel_id, war, side="defense", is_counter=is_counter)
             await database.mark_war_alerted(guild_id, war_id, "alerted_defense")
+            await self._dispatch_counter_requests(guild_id, config, war)
 
         elif side == "offense":
             if await database.is_war_alerted(guild_id, war_id, "alerted_offensive"):
@@ -360,6 +362,68 @@ class Alerts(commands.Cog):
         )
         content = " ".join(pings) if pings else None
         await channel.send(content=content, embed=embed)
+
+    async def _dispatch_counter_requests(self, guild_id, config, war):
+        attacker = war.get("attacker") or {}
+        defender = war.get("defender") or {}
+        members = getattr(self, "_cached_members", None) or []
+
+        candidates = [
+            m for m in members
+            if m.get("id") != defender.get("id") and qualifies(m, attacker)
+        ]
+        candidates.sort(key=military_total, reverse=True)
+
+        war_link = f"https://politicsandwar.com/nation/war/timeline/war={war['id']}"
+        att_name = attacker.get("nation_name", "Unknown")
+        att_alliance = (attacker.get("alliance") or {}).get("name", "None")
+
+        unlinked = []
+        sent = 0
+        for m in candidates:
+            discord_id = await database.get_discord_id_for_nation(m["id"])
+            if not discord_id:
+                unlinked.append(m.get("nation_name", "Unknown"))
+                continue
+
+            member_obj = self.bot.get_user(discord_id) or await self.bot.fetch_user(discord_id)
+            if not member_obj:
+                unlinked.append(m.get("nation_name", "Unknown"))
+                continue
+
+            embed = embeds.warning("🎯 Counter Request")
+            embed.description = (
+                f"**{defender.get('nation_name', 'Unknown')}** is under attack by "
+                f"[{att_name}](https://politicsandwar.com/nation/id={attacker.get('id')}) ({att_alliance}).\n\n"
+                f"You've been picked because your military meets or beats theirs and you have a free offensive slot.\n\n"
+                f"**Enemy:**\n"
+                f"`{attacker.get('soldiers', 0):,} 💂 | {attacker.get('tanks', 0):,} ⚙️ | "
+                f"{attacker.get('aircraft', 0):,} ✈️ | {attacker.get('ships', 0):,} 🚢`\n\n"
+                f"**War reason:** Evergreen Counter\n\n"
+                f"If you can declare on them, please do. If not, let MA know so someone else gets asked.\n\n"
+                f"War link: [Click here]({war_link})"
+            )
+            try:
+                await member_obj.send(embed=embed)
+                sent += 1
+            except discord.Forbidden:
+                unlinked.append(f"{m.get('nation_name', 'Unknown')} (DMs closed)")
+
+        if unlinked:
+            channel_id = config.get("defense_channel_id")
+            channel = self.bot.get_channel(channel_id) if channel_id else None
+            if channel:
+                ma_role_id = await database.get_guild_role(guild_id, "MA")
+                ping = f"<@&{ma_role_id}> " if ma_role_id else ""
+                lines = "\n".join(f"- {n}" for n in unlinked)
+                await channel.send(
+                    content=ping,
+                    embed=embeds.warning(
+                        "Could Not DM These Qualifying Counters",
+                        f"{lines}\n\nThese members qualify to counter **{att_name}** but have no linked "
+                        f"Discord (or DMs closed). DMed **{sent}** others successfully.",
+                    ),
+                )
 
     async def _handle_espionage_check(self, guild_id, config, member, our_alliance_id):
         channel_id = config.get("espionage_channel_id")
