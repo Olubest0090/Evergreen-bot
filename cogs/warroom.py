@@ -65,11 +65,14 @@ async def get_our_nations_for_enemy(bot: commands.Bot, guild_id: int, enemy_nati
 
 
 class WarRoomUpdateView(discord.ui.View):
-    def __init__(self, bot: commands.Bot, guild_id: int, enemy_nation_id: int):
+    def __init__(self, bot: commands.Bot, guild_id: int, enemy_nation_id):
         super().__init__(timeout=None)
         self.bot = bot
         self.guild_id = guild_id
-        self.enemy_nation_id = enemy_nation_id
+        # The P&W API returns nation IDs as text in some responses (and
+        # as numbers in others). Casting here, once, guarantees every
+        # downstream query gets a real int no matter where this came from.
+        self.enemy_nation_id = int(enemy_nation_id)
 
     @discord.ui.button(label="Update", style=discord.ButtonStyle.primary, custom_id="warroom_update")
     async def update(self, interaction: discord.Interaction, button: discord.ui.Button):
