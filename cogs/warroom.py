@@ -59,7 +59,7 @@ async def get_our_nations_for_enemy(bot: commands.Bot, guild_id: int, enemy_nati
     for war in wars:
         enemy = war.get("attacker") if war.get("_side") == "defense" else war.get("defender")
         our_nation = war.get("defender") if war.get("_side") == "defense" else war.get("attacker")
-        if enemy and enemy.get("id") == enemy_nation_id and our_nation:
+        if enemy and str(enemy.get("id")) == str(enemy_nation_id) and our_nation:
             result.append(our_nation)
     return result
 
@@ -68,14 +68,26 @@ class WarRoomUpdateView(discord.ui.View):
     def __init__(self, bot: commands.Bot, guild_id: int, enemy_nation_id):
         super().__init__(timeout=None)
         self.bot = bot
-        self.guild_id = guild_id
+        self.guild_id = int(guild_id)
         # The P&W API returns nation IDs as text in some responses (and
         # as numbers in others). Casting here, once, guarantees every
         # downstream query gets a real int no matter where this came from.
         self.enemy_nation_id = int(enemy_nation_id)
 
-    @discord.ui.button(label="Update", style=discord.ButtonStyle.primary, custom_id="warroom_update")
-    async def update(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # custom_id must be unique per room (it embeds guild+enemy IDs)
+        # so that re-registering this view after every bot restart does
+        # not collide with every other room's Update button. A single
+        # shared custom_id would mean only the LAST registered room's
+        # button actually works.
+        button = discord.ui.Button(
+            label="Update",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"warroom_update:{self.guild_id}:{self.enemy_nation_id}",
+        )
+        button.callback = self.update
+        self.add_item(button)
+
+    async def update(self, interaction: discord.Interaction):
         await interaction.response.defer()
         try:
             enemy = await self.bot.pw_client.get_nation(self.enemy_nation_id)
@@ -227,6 +239,23 @@ class WarRoom(commands.Cog):
         self.bot = bot
         self._missing_cycles: dict[tuple[int, int], int] = {}
         self.warroom_loop.start()
+
+    async def cog_load(self):
+        # Discord buttons stop working after every restart unless the
+        # bot re-registers a matching view for each one still posted.
+        # Without this, every Update button silently dies on redeploy.
+        try:
+            configs = await database.get_all_alerts_configs()
+            count = 0
+            for config in configs:
+                rooms = await database.get_all_war_rooms(config["guild_id"])
+                for room in rooms:
+                    view = WarRoomUpdateView(self.bot, config["guild_id"], room["enemy_nation_id"])
+                    self.bot.add_view(view)
+                    count += 1
+            print(f"[warroom] re-registered {count} Update button(s) after restart")
+        except Exception as e:
+            print(f"[warroom] failed to re-register Update buttons: {e}")
 
     def cog_unload(self):
         self.warroom_loop.cancel()
