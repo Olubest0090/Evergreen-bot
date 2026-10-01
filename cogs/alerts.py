@@ -18,6 +18,7 @@ CHANNEL_TYPE_CHOICES = [
     app_commands.Choice(name="Defensive Wars", value="defense_channel_id"),
     app_commands.Choice(name="Offensive Wars", value="offensive_channel_id"),
     app_commands.Choice(name="Espionage", value="espionage_channel_id"),
+    app_commands.Choice(name="MA Notifications", value="ma_notify_channel_id"),
 ]
 
 POLL_INTERVAL_SECONDS = 90
@@ -410,7 +411,7 @@ class Alerts(commands.Cog):
                 unlinked.append(f"{m.get('nation_name', 'Unknown')} (DMs closed)")
 
         if unlinked:
-            channel_id = config.get("defense_channel_id")
+            channel_id = config.get("ma_notify_channel_id") or config.get("defense_channel_id")
             channel = self.bot.get_channel(channel_id) if channel_id else None
             if channel:
                 ma_role_id = await database.get_guild_role(guild_id, "MA")
