@@ -54,9 +54,11 @@ class Coalitions(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.sync_treaties.start()
+        self.cleanup_dead_alliances.start()
 
     def cog_unload(self):
         self.sync_treaties.cancel()
+        self.cleanup_dead_alliances.cancel()
 
     async def cog_load(self):
         # If /bloc syncnow was already used in ANY guild before this
@@ -113,14 +115,35 @@ class Coalitions(commands.Cog):
         except Exception as e:
             await interaction.followup.send(embed=embeds.error("Lookup Failed", f"P&W API error: `{e}`"))
             return
-        if not alliance_data:
-            await interaction.followup.send(embed=embeds.error("Alliance Not Found", f"No alliance matching `{alliance}`."))
+
+        if alliance_data:
+            await database.remove_coalition_alliance(interaction.guild_id, alliance_data["id"], bloc.value)
+            await interaction.followup.send(
+                embed=embeds.success(
+                    "Removed from Coalition", f"**{alliance_data['name']}** removed from **{bloc.name}**."
+                )
+            )
             return
 
-        await database.remove_coalition_alliance(interaction.guild_id, alliance_data["id"], bloc.value)
+        # Live lookup failed, usually because the alliance was deleted
+        # or merged in-game. Fall back to matching what we already have
+        # stored for this bloc, so a dead alliance can still be removed.
+        rows = await database.list_coalitions(interaction.guild_id, bloc.value)
+        match = next((r for r in rows if (r.get("alliance_name") or "").lower() == alliance.strip().lower()), None)
+        if not match:
+            await interaction.followup.send(
+                embed=embeds.error(
+                    "Alliance Not Found",
+                    f"No alliance matching `{alliance}` live, and no stored entry in **{bloc.name}** matches that name either.",
+                )
+            )
+            return
+
+        await database.remove_coalition_alliance(interaction.guild_id, match["alliance_id"], bloc.value)
         await interaction.followup.send(
             embed=embeds.success(
-                "Removed from Coalition", f"**{alliance_data['name']}** removed from **{bloc.name}**."
+                "Removed from Coalition",
+                f"**{match['alliance_name']}** removed from **{bloc.name}** (it no longer exists in-game, removed using stored data).",
             )
         )
 
@@ -292,6 +315,43 @@ class Coalitions(commands.Cog):
                 f"The regular 10-minute auto-sync loop continues running as normal.",
             )
         )
+
+    @tasks.loop(seconds=TREATY_SYNC_INTERVAL_SECONDS)
+    async def cleanup_dead_alliances(self):
+        # Runs for every server regardless of auto-sync setting, since
+        # this is basic data hygiene, not the ally-tracking feature. If
+        # an alliance was deleted or merged in-game, it no longer
+        # resolves by ID, and it's dropped from whatever bloc(s) it was
+        # in, in any server, manually added or not.
+        try:
+            rows = await database.list_coalitions(0, None) if False else None
+        except Exception:
+            rows = None
+        try:
+            configs = await database.get_all_alerts_configs()
+            checked: dict[int, bool] = {}
+            removed_total = 0
+            for config in configs:
+                guild_rows = await database.list_coalitions(config["guild_id"], None)
+                for row in guild_rows:
+                    aid = row["alliance_id"]
+                    if aid not in checked:
+                        try:
+                            result = await self.bot.pw_client.get_alliance_by_id_or_name(str(aid))
+                        except Exception:
+                            continue  # API hiccup, don't wrongly delete over a transient error
+                        checked[aid] = result is not None
+                    if not checked[aid]:
+                        await database.remove_coalition_alliance(config["guild_id"], aid, row["bloc_type"])
+                        removed_total += 1
+            if removed_total:
+                print(f"[coalitions] cleanup removed {removed_total} dead-alliance entries")
+        except Exception as e:
+            print(f"[coalitions] cleanup error: {e}")
+
+    @cleanup_dead_alliances.before_loop
+    async def before_cleanup(self):
+        await self.bot.wait_until_ready()
 
     @tasks.loop(seconds=TREATY_SYNC_INTERVAL_SECONDS)
     async def sync_treaties(self):
