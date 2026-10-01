@@ -201,6 +201,37 @@ class Coalitions(commands.Cog):
                 )
             )
 
+    @bloc_group.command(name="autosync", description="Turn automatic treaty syncing on or off for this server")
+    @app_commands.describe(enabled="If true, ALLIES/EXTENSION/DNR auto-update from real treaties every 10 minutes. If set to false, every entry this syncing previously added is removed.")
+    async def bloc_autosync(self, interaction: discord.Interaction, enabled: bool):
+        await interaction.response.defer()
+        config = await database.get_alerts_config(interaction.guild_id) or {}
+        if not config.get("alliance_id"):
+            await interaction.followup.send(
+                embed=embeds.error("No Alliance Set", "Set one first with /alerts alliance.")
+            )
+            return
+
+        await database._upsert_alerts_config(interaction.guild_id, auto_sync_treaties=enabled)
+
+        if enabled:
+            await interaction.followup.send(
+                embed=embeds.success(
+                    "Auto-Sync Enabled",
+                    "This server's ALLIES/EXTENSION/DNR blocs will now auto-update from real treaties "
+                    "every 10 minutes. This never affects any other server's coalitions.",
+                )
+            )
+        else:
+            removed = await database.clear_auto_synced_coalitions(interaction.guild_id)
+            await interaction.followup.send(
+                embed=embeds.success(
+                    "Auto-Sync Disabled",
+                    f"Auto-sync is now off for this server. Removed **{removed}** entries that auto-sync "
+                    f"had added. Anything you added manually with /bloc add is untouched.",
+                )
+            )
+
     @bloc_group.command(name="syncnow", description="One-time manual treaty sync (disappears after first use)")
     async def bloc_syncnow(self, interaction: discord.Interaction):
         if not interaction.permissions.administrator:

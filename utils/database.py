@@ -233,6 +233,23 @@ async def list_coalitions(guild_id: int, bloc_type: str | None = None) -> list[d
         return await resp.json()
 
 
+async def clear_auto_synced_coalitions(guild_id: int) -> int:
+    """Deletes every coalition row for this guild that was added by the
+    treaty sync (auto_synced = true), across all bloc types. Manually
+    added entries are untouched. Returns how many rows were removed."""
+    url = f"{_base_url}/rest/v1/coalitions"
+    params = {"guild_id": f"eq.{guild_id}", "auto_synced": "eq.true"}
+    headers = {"Prefer": "return=representation"}
+    async with _session.delete(url, params=params, headers=headers) as resp:
+        if resp.status not in (200, 204):
+            raise RuntimeError(f"Supabase error {resp.status}: {await resp.text()}")
+        try:
+            data = await resp.json()
+            return len(data) if isinstance(data, list) else 0
+        except Exception:
+            return 0
+
+
 async def is_alliance_in_bloc(guild_id: int, alliance_id: int, bloc_type: str) -> bool:
     url = f"{_base_url}/rest/v1/coalitions"
     params = {
