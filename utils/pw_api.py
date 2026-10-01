@@ -115,6 +115,10 @@ class PWApiClient:
                 ships
                 spies
                 discord
+                cities { id }
+                pirate_economy
+                advanced_pirate_economy
+                offensive_wars { turns_left }
               }
             }
           }
