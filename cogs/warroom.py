@@ -19,7 +19,7 @@ from discord.ext import commands, tasks
 from datetime import datetime, timezone
 
 from utils import database, embeds
-from cogs.alerts import nation_block
+from utils.formatting import nation_block
 
 ATTACK_TRACK_INTERVAL_SECONDS = 120
 INACTIVITY_CUTOFF_DAYS = 7

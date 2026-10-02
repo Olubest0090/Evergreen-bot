@@ -14,7 +14,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from utils import database, embeds
-from cogs.alerts import nation_block
+from utils.formatting import nation_block
 from cogs.link import resolve_nation
 
 MAX_RESULTS = 10
