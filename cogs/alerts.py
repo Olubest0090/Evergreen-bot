@@ -26,6 +26,19 @@ POLL_INTERVAL_SECONDS = 90
 
 
 class Alerts(commands.Cog):
+    async def _get_channel(self, channel_id):
+        """Cache lookup first, falls back to a direct API fetch. The
+        cache can miss right after a restart before the gateway has
+        finished syncing a server's channels, which previously caused
+        alerts to silently vanish and get marked as sent anyway."""
+        channel = self.bot.get_channel(channel_id)
+        if channel:
+            return channel
+        try:
+            return await self.bot.fetch_channel(channel_id)
+        except Exception:
+            return None
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.poll_wars.start()
@@ -218,7 +231,9 @@ class Alerts(commands.Cog):
             channel_id = config.get("defense_channel_id")
             if not channel_id:
                 return
-            await self._send_war_alert(guild_id, channel_id, war, side="defense", is_counter=is_counter)
+            sent = await self._send_war_alert(guild_id, channel_id, war, side="defense", is_counter=is_counter)
+            if not sent:
+                return  # channel unreachable this cycle, retry next time instead of marking as done
             await database.mark_war_alerted(guild_id, war_id, "alerted_defense")
             await self._dispatch_counter_requests(guild_id, config, war)
 
@@ -239,15 +254,17 @@ class Alerts(commands.Cog):
                 except Exception:
                     pass
 
-            await self._send_war_alert(
+            sent = await self._send_war_alert(
                 guild_id, channel_id, war, side="offense", is_dnr_violation=is_violation
             )
+            if not sent:
+                return
             await database.mark_war_alerted(guild_id, war_id, "alerted_offensive")
 
     async def _send_war_alert(self, guild_id, channel_id, war, side, is_counter=False, is_dnr_violation=False):
-        channel = self.bot.get_channel(channel_id)
+        channel = await self._get_channel(channel_id)
         if not channel:
-            return
+            return False
 
         attacker = war.get("attacker") or {}
         defender = war.get("defender") or {}
@@ -306,6 +323,7 @@ class Alerts(commands.Cog):
         )
         content = " ".join(pings) if pings else None
         await channel.send(content=content, embed=embed)
+        return True
 
     async def _dispatch_counter_requests(self, guild_id, config, war):
         attacker = war.get("attacker") or {}
@@ -378,8 +396,10 @@ class Alerts(commands.Cog):
         current_spies = member.get("spies", 0)
         last_spies = await database.get_last_spies(guild_id, nation_id)
 
+        reported = True
         if last_spies is not None and current_spies < last_spies:
-            channel = self.bot.get_channel(channel_id)
+            reported = False
+            channel = await self._get_channel(channel_id)
             if channel:
                 discord_id = await database.get_discord_id_for_nation(nation_id)
                 ping = f"<@{discord_id}> " if discord_id else ""
@@ -451,8 +471,12 @@ class Alerts(commands.Cog):
                         embed.add_field(name=field_name, value="\n".join(chunk), inline=False)
 
                 await channel.send(content=ping or None, embed=embed)
+                reported = True
 
-        await database.set_last_spies(guild_id, nation_id, current_spies)
+        if reported:
+            await database.set_last_spies(guild_id, nation_id, current_spies)
+        # else: leave the old baseline in place so next cycle re-detects
+        # the same drop and retries, instead of silently losing the event.
 
 
 async def setup(bot: commands.Bot):

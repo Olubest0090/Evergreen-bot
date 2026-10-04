@@ -26,6 +26,7 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("evergreen-bot")
 
 INTENTS = discord.Intents.default()
+INTENTS.presences = True
 INTENTS.members = True
 
 GUILD_ID = os.environ.get("GUILD_ID")
