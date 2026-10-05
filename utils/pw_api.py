@@ -1,11 +1,5 @@
 """
 Thin wrapper around the Politics & War v3 GraphQL API.
-
-NOTE ON FIELD NAMES: if the API rejects a query, the GraphQL error
-message will name the exact bad field — check it against the live
-schema at https://api.politicsandwar.com/graphql-docs and adjust the
-query string here accordingly. Fields marked "best guess" below have
-not been verified against the live schema.
 """
 
 import os
@@ -33,6 +27,7 @@ class PWApiClient:
             return data["data"]
 
     async def get_nation(self, nation_id: int) -> dict | None:
+        # Expanded query for full /whois + revenue + timers
         query = """
         query($id: [Int]) {
           nations(id: $id, first: 1) {
@@ -45,7 +40,41 @@ class PWApiClient:
               alliance_id
               alliance_position
               alliance { id name }
-              cities { id, infrastructure }
+              cities {
+                id
+                name
+                infrastructure
+                land
+                powered
+                # Buildings / improvements needed for revenue
+                coalmine
+                oilwell
+                uramine
+                bauxitemine
+                leadmine
+                ironmine
+                farm
+                oilpower
+                coalpower
+                nuclearpower
+                windpower
+                gasrefinery
+                steelmill
+                aluminumrefinery
+                munitionsfactory
+                police_station
+                hospital
+                recyclingcenter
+                subway
+                supermarket
+                bank
+                mall
+                stadium
+                barracks
+                factory
+                hangars
+                drydock
+              }
               soldiers
               tanks
               aircraft
@@ -61,6 +90,40 @@ class PWApiClient:
               domestic_policy
               war_policy
               projects
+              # Full project list (boolean flags)
+              iron_works
+              bauxite_works
+              arms_stockpile
+              emergency_gasoline_reserve
+              mass_irrigation
+              international_trade_center
+              missile_launch_pad
+              nuclear_research_facility
+              iron_dome
+              vital_defense_system
+              central_intelligence_agency
+              center_for_civil_engineering
+              propaganda_bureau
+              uranium_enrichment_program
+              urban_planning
+              advanced_urban_planning
+              space_program
+              spy_satellite
+              moon_landing
+              pirate_economy
+              recycling_consortium
+              telecommunications_satellite
+              green_technologies
+              arable_land_agency
+              clinical_research_center
+              specialized_police_training_program
+              advanced_engineering_corps
+              government_support_agency
+              research_and_development_center
+              resource_production_center
+              activity_center
+              advanced_pirate_economy
+              # Wars
               offensive_wars {
                 id turns_left naval_blockade att_id def_id
                 defender { id nation_name alliance_id }
@@ -148,8 +211,6 @@ class PWApiClient:
         return alliances[0] if alliances else None
 
     async def get_top_alliances(self, limit: int) -> list[dict]:
-        """Top alliances by score, used for the DNR top-X threshold.
-        NOTE: orderBy syntax is a best guess at the live schema."""
         query = """
         query($limit: Int) {
           alliances(first: $limit, orderBy: [{column: SCORE, order: DESC}]) {
@@ -161,12 +222,6 @@ class PWApiClient:
         return data["alliances"]["data"]
 
     async def get_alliance_treaties(self, alliance_id: int) -> list[dict]:
-        """Returns this alliance's active treaties, each tagged with
-        the OTHER alliance's id/name regardless of which side of the
-        treaty record our alliance sits on.
-        NOTE: treaty field names (treaty_type, alliance1/alliance2,
-        turns_left) are a best guess — unverified against the live
-        schema. If this errors, the message will show the real names."""
         query = """
         query($id: [Int]) {
           alliances(id: $id, first: 1) {
@@ -191,14 +246,8 @@ class PWApiClient:
         our_id_str = str(alliance_id)
         results = []
         for t in alliances[0].get("treaties") or []:
-            # Don't filter by turns_left here — permanent treaties
-            # (the majority) have no countdown and may report 0/null,
-            # which is NOT the same as "expired" the way it is for wars.
             a1 = t.get("alliance1") or {}
             a2 = t.get("alliance2") or {}
-            # Compare as strings — GraphQL ID scalars often serialize
-            # as strings even when queried with an Int variable, so a
-            # naive int comparison silently fails every time.
             other = a2 if str(a1.get("id")) == our_id_str else a1
             if other.get("id") and str(other["id"]) != our_id_str:
                 results.append({
@@ -209,7 +258,6 @@ class PWApiClient:
         return results
 
     async def get_war(self, war_id: int) -> dict | None:
-        """Single war lookup, for the war room pin and /war info."""
         war_fields = """
               id
               war_type
@@ -241,10 +289,6 @@ class PWApiClient:
         return wars[0] if wars else None
 
     async def get_war_attacks(self, war_id: int) -> list[dict]:
-        """Attack feed for one war. Every field below was verified
-        against the live API with a standalone test. Casualty fields
-        (attcas1/2, defcas1/2) exist but looked empty in testing, so
-        they are deliberately not requested."""
         query = """
         query($id: [Int]) {
           wars(id: $id, first: 1) {
@@ -292,16 +336,6 @@ class PWApiClient:
         return data["nations"]["data"]
 
     async def get_active_wars(self, alliance_id: int) -> list[dict]:
-        """
-        IMPORTANT: the wars(alliance_id: ...) filter argument does NOT
-        actually filter by alliance on the live API — confirmed by direct
-        testing (returned unrelated wars). Do not reintroduce that query.
-
-        Instead, this pulls each member nation's own offensive_wars /
-        defensive_wars relation lists (confirmed reliable via /whois)
-        nested inside the alliance query, tagging each war with which
-        side our member is on.
-        """
         war_fields = """
               id
               war_type
