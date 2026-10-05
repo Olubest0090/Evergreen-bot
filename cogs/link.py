@@ -205,28 +205,18 @@ def build_nation_embed(
 
 # Dynamic Color Block Trade Bonuses
 COLOR_TRADE_BONUSES = {
-    "aqua": 0.1501,
-    "black": 0.1460,
-    "blue": 0.1428,
-    "brown": 0.1380,
-    "green": 0.1420,
-    "lavender": 0.1520,
-    "lime": 0.1511,
-    "maroon": 0.1500,
-    "orange": 0.1450,
-    "pink": 0.1421,
-    "purple": 0.1507,
-    "red": 0.1400,
-    "sky": 0.1470,
-    "turquoise": 0.1527,
-    "white": 0.1200,
-    "yellow": 0.1388,
-    "beige": 0.0,
-    "gray": 0.0
+    "aqua": 0.1501, "black": 0.1460, "blue": 0.1428, "brown": 0.1380,
+    "green": 0.1420, "lavender": 0.1520, "lime": 0.1511, "maroon": 0.1500,
+    "orange": 0.1450, "pink": 0.1421, "purple": 0.1507, "red": 0.1400,
+    "sky": 0.1470, "turquoise": 0.1527, "white": 0.1200, "yellow": 0.1388,
+    "beige": 0.0, "gray": 0.0
 }
 
-async def fetch_live_market_prices(session: aiohttp.ClientSession) -> dict:
-    """Fetches live average market prices via GraphQL."""
+async def fetch_live_market_prices() -> dict:
+    prices = {
+        "food": 125.0, "coal": 3100.0, "oil": 3800.0,
+        "uranium": 24000.0, "iron": 3100.0, "bauxite": 3500.0, "steel": 4800.0
+    }
     query = """
     {
       tradeprices(first: 10) {
@@ -237,19 +227,16 @@ async def fetch_live_market_prices(session: aiohttp.ClientSession) -> dict:
       }
     }
     """
-    prices = {
-        "food": 125.0, "coal": 3100.0, "oil": 3800.0,
-        "uranium": 24000.0, "iron": 3100.0, "bauxite": 3500.0, "steel": 4800.0
-    }
     try:
-        async with session.post("https://api.politicsandwar.com/graphql", json={"query": query}) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                trade_data = data.get("data", {}).get("tradeprices", {}).get("data", [])
-                for item in trade_data:
-                    res = str(item.get("resource")).lower()
-                    if res in prices:
-                        prices[res] = float(item.get("avgprice", prices[res]))
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+            async with session.post("https://api.politicsandwar.com/graphql", json={"query": query}) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    trade_data = data.get("data", {}).get("tradeprices", {}).get("data", [])
+                    for item in trade_data:
+                        res = str(item.get("resource")).lower()
+                        if res in prices:
+                            prices[res] = float(item.get("avgprice", prices[res]))
     except Exception:
         pass
     return prices
@@ -262,162 +249,150 @@ class WhoisView(View):
 
     @discord.ui.button(label="Revenue", style=discord.ButtonStyle.primary, emoji="💰")
     async def revenue_button(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        await interaction.response.defer(ephemeral=True)
 
-        nation = self.nation
-        cities = nation.get("cities") or []
+        try:
+            nation = self.nation
+            cities = nation.get("cities") or []
 
-        # 1. Projects & Tech Flags
-        has_itc = bool(nation.get("international_trade_center"))
-        has_telecom = bool(nation.get("telecommunications_satellite"))
-        has_mass_irrigation = bool(nation.get("mass_irrigation"))
+            has_itc = bool(nation.get("international_trade_center"))
+            has_telecom = bool(nation.get("telecommunications_satellite"))
+            has_mass_irrigation = bool(nation.get("mass_irrigation"))
 
-        # Commerce Cap Setup
-        max_comm = 100
-        if has_itc:
-            max_comm += 15
-        if has_telecom:
-            max_comm += 10
+            max_comm = 100
+            if has_itc:
+                max_comm += 15
+            if has_telecom:
+                max_comm += 10
 
-        # 2. Production Rates (Daily = 12 Turns)
-        farm_rate = 12.0 if has_mass_irrigation else 6.0
-        
-        prod_food = sum((c.get("farm", 0) or 0) * farm_rate for c in cities)
-        prod_coal = sum((c.get("coalmine", 0) or 0) * 3.0 * 12.0 for c in cities)
-        prod_oil = sum((c.get("oilwell", 0) or 0) * 3.0 * 12.0 for c in cities)
-        prod_uranium = sum((c.get("uramine", 0) or 0) * 3.0 * 12.0 for c in cities)
-        prod_iron = sum((c.get("ironmine", 0) or 0) * 3.0 * 12.0 for c in cities)
-        prod_bauxite = sum((c.get("bauxitemine", 0) or 0) * 3.0 * 12.0 for c in cities)
-        prod_steel = sum((c.get("steelmill", 0) or 0) * 12.0 for c in cities)
+            farm_rate = 12.0 if has_mass_irrigation else 6.0
+            
+            prod_food = sum((c.get("farm", 0) or 0) * farm_rate for c in cities)
+            prod_coal = sum((c.get("coalmine", 0) or 0) * 3.0 * 12.0 for c in cities)
+            prod_oil = sum((c.get("oilwell", 0) or 0) * 3.0 * 12.0 for c in cities)
+            prod_uranium = sum((c.get("uramine", 0) or 0) * 3.0 * 12.0 for c in cities)
+            prod_iron = sum((c.get("ironmine", 0) or 0) * 3.0 * 12.0 for c in cities)
+            prod_bauxite = sum((c.get("bauxitemine", 0) or 0) * 3.0 * 12.0 for c in cities)
+            prod_steel = sum((c.get("steelmill", 0) or 0) * 12.0 for c in cities)
 
-        # 3. Resource Consumption
-        cons_coal = sum((c.get("coalpower", 0) or 0) * 12.0 for c in cities)
-        cons_oil = sum(((c.get("oilpower", 0) or 0) * 12.0) + ((c.get("gasrefinery", 0) or 0) * 24.0) for c in cities)
-        cons_uranium = sum((c.get("nuclearpower", 0) or 0) * 14.4 for c in cities)
-        cons_iron = sum((c.get("steelmill", 0) or 0) * 12.0 for c in cities)
+            cons_coal = sum((c.get("coalpower", 0) or 0) * 12.0 for c in cities)
+            cons_oil = sum(((c.get("oilpower", 0) or 0) * 12.0) + ((c.get("gasrefinery", 0) or 0) * 24.0) for c in cities)
+            cons_uranium = sum((c.get("nuclearpower", 0) or 0) * 14.4 for c in cities)
+            cons_iron = sum((c.get("steelmill", 0) or 0) * 12.0 for c in cities)
 
-        # 4. City-Level Money & Population Calculations
-        gross_money = 0.0
-        total_pop = 0.0
+            gross_money = 0.0
+            total_pop = 0.0
 
-        for c in cities:
-            infra = c.get("infrastructure", 0) or 0
+            for c in cities:
+                infra = c.get("infrastructure", 0) or 0
 
-            # Commerce % Calculation
-            comm = (
-                (c.get("supermarket", 0) or 0) * 3
-                + (c.get("bank", 0) or 0) * 5
-                + (c.get("mall", 0) or 0) * 9
-                + (c.get("stadium", 0) or 0) * 12
-                + (c.get("subway", 0) or 0) * 8
+                comm = (
+                    (c.get("supermarket", 0) or 0) * 3
+                    + (c.get("bank", 0) or 0) * 5
+                    + (c.get("mall", 0) or 0) * 9
+                    + (c.get("stadium", 0) or 0) * 12
+                    + (c.get("subway", 0) or 0) * 8
+                )
+                comm = min(comm, max_comm)
+
+                hospitals = c.get("hospital", 0) or 0
+                disease = max(0.0, ((infra / 100.0) ** 2) * 0.01 - (hospitals * 2.5))
+                pop = max(0.0, (infra * 100.0) * (1.0 - (disease / 100.0)))
+                total_pop += pop
+
+                daily_avg_income = (((comm / 50.0) * 0.725) + 0.725)
+                gross_money += daily_avg_income * pop
+
+            pop_food_cons = (total_pop / 1000.0) * 12.0
+
+            soldiers = nation.get("soldiers", 0) or 0
+            tanks = nation.get("tanks", 0) or 0
+            aircraft = nation.get("aircraft", 0) or 0
+            ships = nation.get("ships", 0) or 0
+            missiles = nation.get("missiles", 0) or 0
+            nukes = nation.get("nukes", 0) or 0
+            spies = nation.get("spies", 0) or 0
+
+            mil_money = -(
+                soldiers * 1.88
+                + tanks * 75.0
+                + aircraft * 1000.0
+                + ships * 5000.0
+                + missiles * 31500.0
+                + nukes * 52500.0
+                + spies * 2400.0
             )
-            comm = min(comm, max_comm)
+            mil_food_cons = (soldiers * 0.002 * 12.0)
+            total_food_cons = pop_food_cons + mil_food_cons
 
-            # Disease & Effective Population
-            hospitals = c.get("hospital", 0) or 0
-            disease = max(0.0, ((infra / 100.0) ** 2) * 0.01 - (hospitals * 2.5))
-            pop = max(0.0, (infra * 100.0) * (1.0 - (disease / 100.0)))
-            total_pop += pop
+            net_food = prod_food - total_food_cons
+            net_coal = prod_coal - cons_coal
+            net_oil = prod_oil - cons_oil
+            net_uranium = prod_uranium - cons_uranium
+            net_iron = prod_iron - cons_iron
+            net_bauxite = prod_bauxite
+            net_steel = prod_steel
 
-            # Exact Daily City Income Formula
-            daily_avg_income = (((comm / 50.0) * 0.725) + 0.725)
-            gross_money += daily_avg_income * pop
+            if str(nation.get("domestic_policy", "")).lower() == "open markets":
+                gross_money *= 1.01
 
-        # 5. Food Consumption & Military Upkeep
-        pop_food_cons = (total_pop / 1000.0) * 12.0
+            if net_food < 0:
+                gross_money *= 0.67
 
-        soldiers = nation.get("soldiers", 0) or 0
-        tanks = nation.get("tanks", 0) or 0
-        aircraft = nation.get("aircraft", 0) or 0
-        ships = nation.get("ships", 0) or 0
-        missiles = nation.get("missiles", 0) or 0
-        nukes = nation.get("nukes", 0) or 0
-        spies = nation.get("spies", 0) or 0
+            nation_color = str(nation.get("color", "white")).lower()
+            color_bonus_pct = COLOR_TRADE_BONUSES.get(nation_color, 0.14)
+            trade_bonus = gross_money * color_bonus_pct
+            net_money = gross_money + mil_money + trade_bonus
 
-        mil_money = -(
-            soldiers * 1.88
-            + tanks * 75.0
-            + aircraft * 1000.0
-            + ships * 5000.0
-            + missiles * 31500.0
-            + nukes * 52500.0
-            + spies * 2400.0
-        )
-        mil_food_cons = (soldiers * 0.002 * 12.0)
-        total_food_cons = pop_food_cons + mil_food_cons
+            prices = await fetch_live_market_prices()
 
-        # Net Resources
-        net_food = prod_food - total_food_cons
-        net_coal = prod_coal - cons_coal
-        net_oil = prod_oil - cons_oil
-        net_uranium = prod_uranium - cons_uranium
-        net_iron = prod_iron - cons_iron
-        net_bauxite = prod_bauxite
-        net_steel = prod_steel
+            converted_total = (
+                net_money
+                + net_food * prices["food"]
+                + net_coal * prices["coal"]
+                + net_oil * prices["oil"]
+                + net_uranium * prices["uranium"]
+                + net_iron * prices["iron"]
+                + net_bauxite * prices["bauxite"]
+                + net_steel * prices["steel"]
+            )
 
-        # 6. Apply Gross Income Modifiers
-        if str(nation.get("domestic_policy", "")).lower() == "open markets":
-            gross_money *= 1.01
+            text = (
+                f"**Gross Resource Production:**\n"
+                f"```\n"
+                f"FOOD={prod_food:,.2f}, COAL={prod_coal:,.2f}, OIL={prod_oil:,.2f}, "
+                f"URANIUM={prod_uranium:,.2f}, IRON={prod_iron:,.2f}, BAUXITE={prod_bauxite:,.2f}, STEEL={prod_steel:,.2f}\n"
+                f"```\n"
+                f"**Resource Consumption (Power/Refineries/Pop):**\n"
+                f"```\n"
+                f"FOOD=-{total_food_cons:,.2f}, COAL=-{cons_coal:,.2f}, OIL=-{cons_oil:,.2f}, "
+                f"URANIUM=-{cons_uranium:,.2f}, IRON=-{cons_iron:,.2f}\n"
+                f"```\n"
+                f"**Daily City Revenue:**\n"
+                f"```\n"
+                f"{{MONEY={gross_money:,.2f}, FOOD={net_food:,.2f}, COAL={net_coal:,.2f}, OIL={net_oil:,.2f}, "
+                f"URANIUM={net_uranium:,.2f}, IRON={net_iron:,.2f}, BAUXITE={net_bauxite:,.2f}, STEEL={net_steel:,.2f}}}\n"
+                f"```\n"
+                f"**Military Upkeep:**\n"
+                f"```\n"
+                f"{{MONEY={mil_money:,.0f}, FOOD=-{mil_food_cons:,.0f}}}\n"
+                f"```\n"
+                f"**Trade Bonus:**\n"
+                f"```\n"
+                f"{trade_bonus:,.2f}\n"
+                f"```\n"
+                f"**Combined Total:**\n"
+                f"```\n"
+                f"{{MONEY={net_money:,.2f}, FOOD={net_food:,.2f}, COAL={net_coal:,.2f}, OIL={net_oil:,.2f}, "
+                f"URANIUM={net_uranium:,.2f}, IRON={net_iron:,.2f}, BAUXITE={net_bauxite:,.2f}, STEEL={net_steel:,.2f}}}\n"
+                f"```\n"
+                f"**Converted Total:** ${converted_total:,.2f}"
+            )
 
-        if net_food < 0:
-            gross_money *= 0.67
-
-        # Color Block Trade Bonus
-        nation_color = str(nation.get("color", "white")).lower()
-        color_bonus_pct = COLOR_TRADE_BONUSES.get(nation_color, 0.14)
-        trade_bonus = gross_money * color_bonus_pct
-        net_money = gross_money + mil_money + trade_bonus
-
-        # 7. Fetch Market Prices & Calculate Converted Total
-        async with aiohttp.ClientSession() as session:
-            prices = await fetch_live_market_prices(session)
-
-        converted_total = (
-            net_money
-            + net_food * prices["food"]
-            + net_coal * prices["coal"]
-            + net_oil * prices["oil"]
-            + net_uranium * prices["uranium"]
-            + net_iron * prices["iron"]
-            + net_bauxite * prices["bauxite"]
-            + net_steel * prices["steel"]
-        )
-
-        # Output Formatting
-        text = (
-            f"**Gross Resource Production:**\n"
-            f"```\n"
-            f"FOOD={prod_food:,.2f}, COAL={prod_coal:,.2f}, OIL={prod_oil:,.2f}, "
-            f"URANIUM={prod_uranium:,.2f}, IRON={prod_iron:,.2f}, BAUXITE={prod_bauxite:,.2f}, STEEL={prod_steel:,.2f}\n"
-            f"```\n"
-            f"**Resource Consumption (Power/Refineries/Pop):**\n"
-            f"```\n"
-            f"FOOD=-{total_food_cons:,.2f}, COAL=-{cons_coal:,.2f}, OIL=-{cons_oil:,.2f}, "
-            f"URANIUM=-{cons_uranium:,.2f}, IRON=-{cons_iron:,.2f}\n"
-            f"```\n"
-            f"**Daily City Revenue:**\n"
-            f"```\n"
-            f"{{MONEY={gross_money:,.2f}, FOOD={net_food:,.2f}, COAL={net_coal:,.2f}, OIL={net_oil:,.2f}, "
-            f"URANIUM={net_uranium:,.2f}, IRON={net_iron:,.2f}, BAUXITE={net_bauxite:,.2f}, STEEL={net_steel:,.2f}}}\n"
-            f"```\n"
-            f"**Military Upkeep:**\n"
-            f"```\n"
-            f"{{MONEY={mil_money:,.0f}, FOOD=-{mil_food_cons:,.0f}}}\n"
-            f"```\n"
-            f"**Trade Bonus:**\n"
-            f"```\n"
-            f"{trade_bonus:,.2f}\n"
-            f"```\n"
-            f"**Combined Total:**\n"
-            f"```\n"
-            f"{{MONEY={net_money:,.2f}, FOOD={net_food:,.2f}, COAL={net_coal:,.2f}, OIL={net_oil:,.2f}, "
-            f"URANIUM={net_uranium:,.2f}, IRON={net_iron:,.2f}, BAUXITE={net_bauxite:,.2f}, STEEL={net_steel:,.2f}}}\n"
-            f"```\n"
-            f"**Converted Total:** ${converted_total:,.2f}"
-        )
-
-        embed = embeds.info("Nation Revenue Breakdown", text)
-        await interaction.followup.send(embed=embed, ephemeral=True)
+            embed = embeds.info("Nation Revenue Breakdown", text)
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"Error calculating revenue: `{str(e)}`", ephemeral=True)
 
     @discord.ui.button(label="Timers", style=discord.ButtonStyle.secondary, emoji="⏱️")
     async def timers_button(self, interaction: discord.Interaction, button: Button):
