@@ -262,7 +262,7 @@ class WhoisView(View):
 
     @discord.ui.button(label="Revenue", style=discord.ButtonStyle.primary, emoji="💰")
     async def revenue_button(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
 
         nation = self.nation
         cities = nation.get("cities") or []
@@ -579,7 +579,7 @@ class Link(commands.Cog):
     @app_commands.command(name="unlink", description="Remove a nation link")
     @app_commands.describe(member="Who to unlink (defaults to yourself; unlinking others needs Admin or MA)")
     async def unlink(self, interaction: discord.Interaction, member: discord.Member = None):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
         target = member or interaction.user
 
         if target.id != interaction.user.id:
