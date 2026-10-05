@@ -1,6 +1,6 @@
 """
 /link — connects a Discord member to their Politics & War nation.
-/whois — shows a full nation profile card for a linked member.
+/whois — shows a full nation profile card for a linked member or any nation.
 """
 import asyncio
 import re
@@ -14,9 +14,9 @@ from utils import database, embeds
 NATION_URL_PATTERN = re.compile(r"nation[/=]id=(\d+)|nation/(\d+)")
 
 
-
 def normalize_discord_tag(s: str) -> str:
     return s.strip().lower().lstrip("@").split("#")[0]
+
 
 async def resolve_nation(pw_client, nation_input: str) -> dict | None:
     text = nation_input.strip()
@@ -74,7 +74,12 @@ def format_timer_seconds(seconds: int | float | None) -> str:
     return f"{minutes}m"
 
 
-def build_nation_embed(nation: dict, off_count: int = 0, def_count: int = 0) -> discord.Embed:
+def build_nation_embed(
+    nation: dict,
+    off_count: int = 0,
+    def_count: int = 0,
+    discord_user: discord.User | discord.Member | None = None,
+) -> discord.Embed:
     nation_id = nation["id"]
     name = nation.get("nation_name", "Unknown")
     leader = nation.get("leader_name", "Unknown")
@@ -83,10 +88,10 @@ def build_nation_embed(nation: dict, off_count: int = 0, def_count: int = 0) -> 
     alliance = nation.get("alliance") or {}
     alliance_name = alliance.get("name", "None")
     position = (nation.get("alliance_position") or "None").title()
-    num_cities = len(nation.get("cities") or [])
+    cities = nation.get("cities") or []
+    num_cities = len(cities)
+    total_infra = sum(c.get("infrastructure", 0) or 0 for c in cities)
 
-    # Base offensive slots is 5; pirate economy raises it to 6, and
-    # advanced pirate economy raises it to 7. Defensive slots are always 3.
     if nation.get("advanced_pirate_economy"):
         max_off = 7
     elif nation.get("pirate_economy"):
@@ -97,9 +102,6 @@ def build_nation_embed(nation: dict, off_count: int = 0, def_count: int = 0) -> 
 
     domestic_policy = (nation.get("domestic_policy") or "None").replace("_", " ").title()
     war_policy = (nation.get("war_policy") or "None").replace("_", " ").title()
-
-    # projects is a direct integer count on the live API (confirmed via
-    # live query test), not a list — no calculation needed.
     project_count = nation.get("projects", 0) or 0
 
     status_parts = []
@@ -138,27 +140,65 @@ def build_nation_embed(nation: dict, off_count: int = 0, def_count: int = 0) -> 
     war_def_low, war_def_high = score / 2.5, score / 0.75
     spy_low, spy_high = score / 2.5, score * 2.5
 
-    embed = embeds.info(name)
-    embed.url = f"https://politicsandwar.com/nation/id={nation_id}"
-    embed.description = (
-        f"**Leader:** {leader}\n"
-        f"**Alliance:** {alliance_name} ({position})\n"
-        f"**Color Bloc:** {color}\n"
-        f"**Domestic Policy:** {domestic_policy} | **War Policy:** {war_policy}\n"
-        f"**Cities:** {num_cities} | **Score:** {score:,.2f}\n"
-        f"**Projects Built:** {project_count}\n"
-        f"**War Slots:** Offense {off_count}/{max_off} · Defense {def_count}/{max_def}\n"
-        f"**Last Active:** {format_duration(nation.get('last_active'))}\n"
-        f"**Status:** {status}\n\n"
-        f"**Military**\n"
-        f"`{nation.get('soldiers', 0):,} 💂 | {nation.get('tanks', 0):,} ⚙️ | "
-        f"{nation.get('aircraft', 0):,} ✈️ | {nation.get('ships', 0):,} 🚢 | "
-        f"{nation.get('missiles', 0)} 🚀 | {nation.get('nukes', 0)} ☢️ | "
-        f"{nation.get('spies', 0):,} 🔍`\n\n"
-        f"**War Range (Attack):** {war_att_low:,.2f} – {war_att_high:,.2f}\n"
-        f"**War Range (Defense):** {war_def_low:,.2f} – {war_def_high:,.2f}\n"
-        f"**Spy Range:** {spy_low:,.2f} – {spy_high:,.2f}"
+    embed = discord.Embed(
+        title=name,
+        url=f"https://politicsandwar.com/nation/id={nation_id}",
+        color=0x2E7D32,
+        timestamp=datetime.now(timezone.utc),
     )
+    embed.set_footer(text="Evergreen MILCOM")
+
+    if discord_user:
+        embed.set_author(
+            name=str(discord_user.display_name),
+            icon_url=discord_user.display_avatar.url,
+        )
+        embed.description = f"**Discord:** {discord_user.mention}"
+
+    embed.add_field(
+        name="Overview",
+        value=(
+            f"**Leader:** {leader}\n"
+            f"**Alliance:** {alliance_name} ({position})\n"
+            f"**Color:** {color}\n"
+            f"**Cities:** {num_cities}  |  **Infra:** {total_infra:,.2f}\n"
+            f"**Score:** {score:,.2f}  |  **Projects:** {project_count}\n"
+            f"**Policies:** {domestic_policy} / {war_policy}"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="Military",
+        value=(
+            f"`{nation.get('soldiers', 0):,} 💂 | {nation.get('tanks', 0):,} ⚙️ | "
+            f"{nation.get('aircraft', 0):,} ✈️ | {nation.get('ships', 0):,} 🚢`\n"
+            f"`{nation.get('missiles', 0)} 🚀 | {nation.get('nukes', 0)} ☢️ | "
+            f"{nation.get('spies', 0):,} 🔍`"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="WarSlots & Status",
+        value=(
+            f"**Offense:** {off_count}/{max_off}   **Defense:** {def_count}/{max_def}\n"
+            f"**Last Active:** {format_duration(nation.get('last_active'))}\n"
+            f"**Status:** {status}"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="Ranges",
+        value=(
+            f"**Attack:** {war_att_low:,.2f} – {war_att_high:,.2f}\n"
+            f"**Defense:** {war_def_low:,.2f} – {war_def_high:,.2f}\n"
+            f"**Spies:** {spy_low:,.2f} – {spy_high:,.2f}"
+        ),
+        inline=False,
+    )
+
     return embed
 
 
@@ -238,8 +278,6 @@ class Link(commands.Cog):
             )
             return
 
-        # Block double-claiming: this nation must not already belong to
-        # a different Discord account.
         existing_owner_id = await database.get_discord_id_for_nation(nation_data["id"])
         if existing_owner_id and existing_owner_id == target.id:
             await interaction.followup.send(
@@ -259,9 +297,6 @@ class Link(commands.Cog):
             )
             return
 
-        # Self-linking must match the Discord tag the nation itself has
-        # on file, so people cannot claim someone else's nation. This
-        # check is skipped when Admin/MA links another member.
         if target.id == interaction.user.id:
             stored_tag = nation_data.get("discord")
             candidates = {normalize_discord_tag(target.name)}
@@ -320,36 +355,72 @@ class Link(commands.Cog):
             embed=embeds.success("Unlinked", f"{target.mention}'s nation link has been removed.")
         )
 
-    @app_commands.command(name="whois", description="Show a full nation profile for a member")
-    @app_commands.describe(member="The member to look up")
-    async def whois(self, interaction: discord.Interaction, member: discord.Member):
+    @app_commands.command(name="whois", description="Show a full nation profile")
+    @app_commands.describe(
+        member="Discord member (must be linked)",
+        nation="Nation ID, name, or URL (for unlinked / enemy nations)",
+    )
+    async def whois(
+        self,
+        interaction: discord.Interaction,
+        member: discord.Member = None,
+        nation: str = None,
+    ):
         await interaction.response.defer()
-        nation_id = await database.get_nation_for_user(member.id)
-        if not nation_id:
+
+        if not member and not nation:
             await interaction.followup.send(
-                embed=embeds.info("Not Linked", f"{member.mention} has not linked a nation.")
+                embed=embeds.error(
+                    "Missing Input",
+                    "Provide either a **Discord member** or a **nation ID / name / URL**.",
+                )
             )
             return
 
+        if member and nation:
+            await interaction.followup.send(
+                embed=embeds.error(
+                    "Too Many Inputs",
+                    "Provide either a member **or** a nation, not both.",
+                )
+            )
+            return
+
+        discord_user = None
+        nation_data = None
+
         try:
-            nation = await self.bot.pw_client.get_nation(nation_id)
-            off_wars = (nation.get("offensive_wars") or []) if nation else []
-            def_wars = (nation.get("defensive_wars") or []) if nation else []
+            if member:
+                nation_id = await database.get_nation_for_user(member.id)
+                if not nation_id:
+                    await interaction.followup.send(
+                        embed=embeds.info("Not Linked", f"{member.mention} has not linked a nation.")
+                    )
+                    return
+                nation_data = await self.bot.pw_client.get_nation(nation_id)
+                discord_user = member
+            else:
+                nation_data = await resolve_nation(self.bot.pw_client, nation)
+
+            if not nation_data:
+                await interaction.followup.send(
+                    embed=embeds.error("Nation Not Found", "Could not find that nation.")
+                )
+                return
+
+            off_wars = nation_data.get("offensive_wars") or []
+            def_wars = nation_data.get("defensive_wars") or []
             off_count = sum(1 for w in off_wars if (w.get("turns_left") or 0) > 0)
             def_count = sum(1 for w in def_wars if (w.get("turns_left") or 0) > 0)
+
         except Exception as e:
             await interaction.followup.send(
                 embed=embeds.error("Lookup Failed", f"Error contacting the P&W API: `{e}`")
             )
             return
 
-        if not nation:
-            await interaction.followup.send(
-                embed=embeds.error("Nation Not Found", f"Linked nation ID `{nation_id}` no longer exists.")
-            )
-            return
-
-        await interaction.followup.send(embed=build_nation_embed(nation, off_count, def_count))
+        embed = build_nation_embed(nation_data, off_count, def_count, discord_user)
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(
         name="autolink",
