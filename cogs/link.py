@@ -203,7 +203,7 @@ def build_nation_embed(
     return embed
 
 
-# Dynamic Color Block Trade Bonuses
+# Locutus-Aligned Daily Revenue Engine
 COLOR_TRADE_BONUSES = {
     "aqua": 0.1501, "black": 0.1460, "blue": 0.1428, "brown": 0.1380,
     "green": 0.1420, "lavender": 0.1520, "lime": 0.1511, "maroon": 0.1500,
@@ -268,17 +268,23 @@ class WhoisView(View):
             farm_rate = 12.0 if has_mass_irrigation else 6.0
             
             prod_food = sum((c.get("farm", 0) or 0) * farm_rate for c in cities)
-            prod_coal = sum((c.get("coalmine", 0) or 0) * 3.0 * 12.0 for c in cities)
-            prod_oil = sum((c.get("oilwell", 0) or 0) * 3.0 * 12.0 for c in cities)
-            prod_uranium = sum((c.get("uramine", 0) or 0) * 3.0 * 12.0 for c in cities)
-            prod_iron = sum((c.get("ironmine", 0) or 0) * 3.0 * 12.0 for c in cities)
-            prod_bauxite = sum((c.get("bauxitemine", 0) or 0) * 3.0 * 12.0 for c in cities)
+            prod_coal = sum((c.get("coalmine", 0) or 0) * 36.0 for c in cities)
+            prod_oil = sum((c.get("oilwell", 0) or 0) * 36.0 for c in cities)
+            prod_uranium = sum((c.get("uramine", 0) or 0) * 36.0 for c in cities)
+            prod_iron = sum((c.get("ironmine", 0) or 0) * 36.0 for c in cities)
+            prod_bauxite = sum((c.get("bauxitemine", 0) or 0) * 36.0 for c in cities)
             prod_steel = sum((c.get("steelmill", 0) or 0) * 12.0 for c in cities)
 
             cons_coal = sum((c.get("coalpower", 0) or 0) * 12.0 for c in cities)
             cons_oil = sum(((c.get("oilpower", 0) or 0) * 12.0) + ((c.get("gasrefinery", 0) or 0) * 24.0) for c in cities)
             cons_uranium = sum((c.get("nuclearpower", 0) or 0) * 14.4 for c in cities)
             cons_iron = sum((c.get("steelmill", 0) or 0) * 12.0 for c in cities)
+
+            tax_rate = float(nation.get("tax_rate", 0) or 0) / 100.0
+            if tax_rate <= 0:
+                tax_rate = 0.10  # Standard fallback
+
+            min_wage = 725.0 / (tax_rate * 1000.0) if tax_rate > 0 else 7.25
 
             gross_money = 0.0
             total_pop = 0.0
@@ -300,8 +306,8 @@ class WhoisView(View):
                 pop = max(0.0, (infra * 100.0) * (1.0 - (disease / 100.0)))
                 total_pop += pop
 
-                daily_avg_income = (((comm / 50.0) * 0.725) + 0.725)
-                gross_money += daily_avg_income * pop
+                avg_income = ((comm / 50.0) * min_wage) + min_wage
+                gross_money += avg_income * pop * tax_rate
 
             pop_food_cons = (total_pop / 1000.0) * 12.0
 
@@ -340,7 +346,7 @@ class WhoisView(View):
                 gross_money *= 0.67
 
             nation_color = str(nation.get("color", "white")).lower()
-            color_bonus_pct = COLOR_TRADE_BONUSES.get(nation_color, 0.14)
+            color_bonus_pct = COLOR_TRADE_BONUSES.get(nation_color, 0.1443)
             trade_bonus = gross_money * color_bonus_pct
             net_money = gross_money + mil_money + trade_bonus
 
