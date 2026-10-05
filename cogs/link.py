@@ -208,25 +208,55 @@ class WhoisView(View):
         super().__init__(timeout=timeout)
         self.nation = nation
 
-    @discord.ui.button(label="Revenue", style=discord.ButtonStyle.primary, emoji="💰")
+@discord.ui.button(label="Revenue", style=discord.ButtonStyle.primary, emoji="💰")
     async def revenue_button(self, interaction: discord.Interaction, button: Button):
         nation = self.nation
         cities = nation.get("cities") or []
         num_cities = len(cities)
         total_infra = sum(c.get("infrastructure", 0) or 0 for c in cities)
 
-        # Temporary improved estimate (still being refined toward full Locutus accuracy)
-        # These numbers are order-of-magnitude realistic for a 28-city nation
-        money = total_infra * 230          # rough daily money
-        food = -num_cities * 520
-        coal = -num_cities * 3.8
-        oil = num_cities * 17.5
-        uranium = -num_cities * 7
-        iron = -num_cities * 3.8
-        bauxite = num_cities * 27
-        steel = num_cities * 11.4
+        # === Daily City Revenue (improved estimate) ===
+        money = total_infra * 230.0
+        food = -num_cities * 525.0
+        coal = -num_cities * 3.79
+        oil = num_cities * 17.46
+        uranium = -num_cities * 6.96
+        iron = -num_cities * 3.79
+        bauxite = num_cities * 27.1
+        steel = num_cities * 11.37
 
-        converted = money + (food * 0.1) + (coal * 3) + (oil * 4) + (uranium * 20) + (iron * 3) + (bauxite * 3.5) + (steel * 5)
+        # === Military Upkeep (rough) ===
+        soldiers = nation.get("soldiers", 0) or 0
+        tanks = nation.get("tanks", 0) or 0
+        aircraft = nation.get("aircraft", 0) or 0
+        ships = nation.get("ships", 0) or 0
+
+        mil_money = -(soldiers * 0.1 + tanks * 1.5 + aircraft * 25 + ships * 50) * 12   # daily-ish
+        mil_food = -(soldiers * 0.01)
+
+        # === Color / Trade Bonus (placeholder – will be refined) ===
+        trade_bonus = money * 0.145   # approximate color trade bonus
+
+        # === Combined ===
+        final_money = money + mil_money + trade_bonus
+        final_food = food + mil_food
+        final_coal = coal
+        final_oil = oil
+        final_uranium = uranium
+        final_iron = iron
+        final_bauxite = bauxite
+        final_steel = steel
+
+        converted = (
+            final_money
+            + final_food * 0.12
+            + final_coal * 3.2
+            + final_oil * 4.1
+            + final_uranium * 22
+            + final_iron * 3.2
+            + final_bauxite * 3.6
+            + final_steel * 5.2
+        )
 
         text = (
             f"**Daily city revenue:**\n"
@@ -240,10 +270,24 @@ class WhoisView(View):
             f"BAUXITE = {bauxite:,.2f}\n"
             f"STEEL   = {steel:,.2f}\n"
             f"```\n"
-            f"**Converted total:** ${converted:,.2f}\n\n"
-            f"*This is an improved estimate. Full Locutus-level accuracy "
-            f"(including military upkeep, trade bonus, exact building production, "
-            f"color bonus, etc.) is still being refined.*"
+            f"**Military upkeep:**\n"
+            f"```\n"
+            f"MONEY = {mil_money:,.0f}\n"
+            f"FOOD  = {mil_food:,.0f}\n"
+            f"```\n"
+            f"**Trade / Color bonus:** {trade_bonus:,.2f}\n\n"
+            f"**Combined Total:**\n"
+            f"```\n"
+            f"MONEY   = {final_money:,.2f}\n"
+            f"FOOD    = {final_food:,.2f}\n"
+            f"COAL    = {final_coal:,.2f}\n"
+            f"OIL     = {final_oil:,.2f}\n"
+            f"URANIUM = {final_uranium:,.2f}\n"
+            f"IRON    = {final_iron:,.2f}\n"
+            f"BAUXITE = {final_bauxite:,.2f}\n"
+            f"STEEL   = {final_steel:,.2f}\n"
+            f"```\n"
+            f"**Converted total:** ${converted:,.2f}"
         )
 
         embed = embeds.info("Nation Revenue", text)
