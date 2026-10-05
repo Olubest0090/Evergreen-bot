@@ -25,6 +25,18 @@ CHANNEL_TYPE_CHOICES = [
 POLL_INTERVAL_SECONDS = 90
 
 
+def is_inactive(last_active_iso: str | None, days: int = 7) -> bool:
+    # Missing or unreadable data counts as active, so an alert is
+    # never hidden because the API left a field out.
+    if not last_active_iso:
+        return False
+    try:
+        last = datetime.fromisoformat(last_active_iso.replace("Z", "+00:00"))
+        return (datetime.now(timezone.utc) - last).days >= days
+    except Exception:
+        return False
+
+
 class Alerts(commands.Cog):
     async def _get_channel(self, channel_id):
         """Cache lookup first, falls back to a direct API fetch. The
