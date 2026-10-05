@@ -212,22 +212,17 @@ class WhoisView(View):
     async def revenue_button(self, interaction: discord.Interaction, button: Button):
         nation = self.nation
         cities = nation.get("cities") or []
+        num_cities = len(cities)
 
-        # === 1. Base City Income (P&W Daily Base Math) ===
+        # Base Projects Check
+        projects = nation.get("projects", []) or []
+        has_mass_transit = "mass_transit" in projects or "Mass Transit" in projects
+        has_recycling = "recycling_initiative" in projects or "Recycling Initiative" in projects
+        has_telecom = "telecommunications" in projects or "Telecommunications" in projects
+
         gross_money = 0.0
-        for c in cities:
-            infra = c.get("infrastructure", 0) or 0
-            pop = c.get("population", 0) or (infra * 100)
-            land = c.get("land", 0) or 0
-            commerce = c.get("commerce", 0) or 0
-            
-            # Daily City Revenue Math
-            base_pop_income = pop * 0.50
-            infra_income = infra * 170.0
-            city_gross = (base_pop_income + infra_income) * (1 + commerce / 100.0)
-            gross_money += city_gross
-
-        # === 2. Gross Resource Production Breakdown (12 Turns / Day) ===
+        
+        # Raw Gross Production
         prod_food = sum((c.get("farm", 0) or 0) * 12.0 for c in cities)
         prod_coal = sum((c.get("coalmine", 0) or 0) * 12.0 for c in cities)
         prod_oil = sum((c.get("oilwell", 0) or 0) * 12.0 for c in cities)
@@ -236,15 +231,29 @@ class WhoisView(View):
         prod_bauxite = sum((c.get("bauxitemine", 0) or 0) * 12.0 for c in cities)
         prod_steel = sum((c.get("steelmill", 0) or 0) * 12.0 for c in cities)
 
-        # === 3. Resource Consumption Breakdown (Daily) ===
+        # Resource Consumption
         cons_coal = sum((c.get("coalpower", 0) or 0) * 12.0 for c in cities)
         cons_oil = sum((c.get("oilpower", 0) or 0) * 12.0 + (c.get("gasrefinery", 0) or 0) * 24.0 for c in cities)
         cons_uranium = sum((c.get("nuclearpower", 0) or 0) * 14.4 for c in cities)
         cons_iron = sum((c.get("steelmill", 0) or 0) * 12.0 for c in cities)
-        
-        pop_food_cons = sum(((c.get("population", 0) or (c.get("infrastructure", 0) * 100)) / 1000.0) * 12.0 for c in cities)
 
-        # === 4. Military Upkeep ===
+        total_pop = 0
+        for c in cities:
+            infra = c.get("infrastructure", 0) or 0
+            pop = c.get("population", 0) or (infra * 100)
+            total_pop += pop
+            
+            comm = (c.get("commerce", 0) or 0)
+            if has_telecom:
+                comm += 5
+                
+            base_inc = (pop * 0.50 + infra * 170.0) * (1.0 + comm / 100.0)
+            gross_money += base_inc
+
+        # Population Food Cons: (Pop / 1000) * 12 turns
+        pop_food_cons = (total_pop / 1000.0) * 12.0
+
+        # Military Upkeep
         soldiers = nation.get("soldiers", 0) or 0
         tanks = nation.get("tanks", 0) or 0
         aircraft = nation.get("aircraft", 0) or 0
@@ -255,10 +264,9 @@ class WhoisView(View):
 
         mil_money = -(soldiers * 1.88 + tanks * 75.0 + aircraft * 1000.0 + ships * 5000.0 + missiles * 31500.0 + nukes * 52500.0 + spies * 2400.0)
         mil_food_cons = (soldiers * 0.002 * 12.0)
-
         total_food_cons = pop_food_cons + mil_food_cons
 
-        # === 5. Combined Net Totals ===
+        # Combined Net Totals
         net_food = prod_food - total_food_cons
         net_coal = prod_coal - cons_coal
         net_oil = prod_oil - cons_oil
@@ -267,7 +275,6 @@ class WhoisView(View):
         net_bauxite = prod_bauxite
         net_steel = prod_steel
 
-        # Trade Bonus alignment (~14.83% of gross)
         trade_bonus = gross_money * 0.1483
         net_money = gross_money + mil_money + trade_bonus
 
