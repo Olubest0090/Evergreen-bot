@@ -208,7 +208,7 @@ class WhoisView(View):
         super().__init__(timeout=timeout)
         self.nation = nation
 
-@discord.ui.button(label="Revenue", style=discord.ButtonStyle.primary, emoji="💰")
+    @discord.ui.button(label="Revenue", style=discord.ButtonStyle.primary, emoji="💰")
     async def revenue_button(self, interaction: discord.Interaction, button: Button):
         nation = self.nation
         cities = nation.get("cities") or []
