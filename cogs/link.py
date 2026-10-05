@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import discord
 from discord import app_commands
 from discord.ext import commands
+from discord.ui import View, Button
 
 from utils import database, embeds
 
@@ -200,6 +201,41 @@ def build_nation_embed(
     )
 
     return embed
+
+
+class WhoisView(View):
+    def __init__(self, nation: dict, timeout: float = 120):
+        super().__init__(timeout=timeout)
+        self.nation = nation
+
+    @discord.ui.button(label="Revenue", style=discord.ButtonStyle.primary, emoji="💰")
+    async def revenue_button(self, interaction: discord.Interaction, button: Button):
+        # Placeholder – full Locutus calculation coming next
+        embed = embeds.info(
+            "Revenue (Coming Full Calculation)",
+            "Full Locutus-style revenue (money + all resources + worth) will be added in the next update.\n\n"
+            "For now this button is ready and ephemeral."
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Timers", style=discord.ButtonStyle.secondary, emoji="⏱️")
+    async def timers_button(self, interaction: discord.Interaction, button: Button):
+        nation = self.nation
+        beige = nation.get("beige_turns", 0) or 0
+        vacation = nation.get("vacation_mode_turns", 0) or 0
+        projects = nation.get("projects", 0) or 0
+
+        text = (
+            f"**City:** Coming (full calculation next)\n"
+            f"**Project:** Coming | ({projects}/20 slots)\n"
+            f"**Color:** Coming\n"
+            f"**Domestic Policy:** Coming\n"
+            f"**War Policy:** Coming\n"
+            f"**Beige Turns:** {beige} turns\n"
+            f"**Vacation:** {vacation} turns"
+        )
+        embed = embeds.info("Nation Timers", text)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 class Link(commands.Cog):
@@ -420,7 +456,8 @@ class Link(commands.Cog):
             return
 
         embed = build_nation_embed(nation_data, off_count, def_count, discord_user)
-        await interaction.followup.send(embed=embed)
+        view = WhoisView(nation_data)
+        await interaction.followup.send(embed=embed, view=view)
 
     @app_commands.command(
         name="autolink",
