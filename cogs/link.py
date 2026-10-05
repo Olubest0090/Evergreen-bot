@@ -204,39 +204,64 @@ def build_nation_embed(
 
 
 class WhoisView(View):
-    def __init__(self, nation: dict, timeout: float = 120):
+    def __init__(self, nation: dict, timeout: float = 180):
         super().__init__(timeout=timeout)
         self.nation = nation
 
     @discord.ui.button(label="Revenue", style=discord.ButtonStyle.primary, emoji="💰")
     async def revenue_button(self, interaction: discord.Interaction, button: Button):
-        # Placeholder – full Locutus calculation coming next
-        embed = embeds.info(
-            "Revenue (Coming Full Calculation)",
-            "Full Locutus-style revenue (money + all resources + worth) will be added in the next update.\n\n"
-            "For now this button is ready and ephemeral."
+        nation = self.nation
+        cities = nation.get("cities") or []
+
+        # Very simplified revenue estimate (will be improved)
+        # This is a starting point using basic city data
+        total_infra = sum(c.get("infrastructure", 0) or 0 for c in cities)
+        num_cities = len(cities)
+
+        # Rough daily money estimate (placeholder formula)
+        rough_money = total_infra * 12.5 * num_cities * 0.8   # rough order-of-magnitude
+
+        text = (
+            f"**Revenue Estimate** (first version)\n\n"
+            f"**Worth (approx):** ${rough_money:,.0f}\n\n"
+            f"**Cities:** {num_cities}\n"
+            f"**Total Infra:** {total_infra:,.2f}\n\n"
+            f"*Full Locutus-style resource breakdown (Food, Coal, Oil, Uranium, etc.) "
+            f"is being refined. This button already works and is ephemeral.*"
         )
+
+        embed = embeds.info("Nation Revenue", text)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @discord.ui.button(label="Timers", style=discord.ButtonStyle.secondary, emoji="⏱️")
     async def timers_button(self, interaction: discord.Interaction, button: Button):
         nation = self.nation
-        beige = nation.get("beige_turns", 0) or 0
-        vacation = nation.get("vacation_mode_turns", 0) or 0
+        cities = nation.get("cities") or []
+        num_cities = len(cities)
         projects = nation.get("projects", 0) or 0
 
+        beige = nation.get("beige_turns", 0) or 0
+        vacation = nation.get("vacation_mode_turns", 0) or 0
+
+        # Project slots (max is normally 20, some projects increase it)
+        max_projects = 20
+        if nation.get("urban_planning") or nation.get("advanced_urban_planning"):
+            max_projects = 25  # approximate
+
         text = (
-            f"**City:** Coming (full calculation next)\n"
-            f"**Project:** Coming | ({projects}/20 slots)\n"
-            f"**Color:** Coming\n"
-            f"**Domestic Policy:** Coming\n"
-            f"**War Policy:** Coming\n"
+            f"**City:** Ready / calculating (full formula next)\n"
+            f"**Project:** Ready | ({projects}/{max_projects} slots)\n"
+            f"**Color:** Ready / calculating\n"
+            f"**Domestic Policy:** Ready / calculating\n"
+            f"**War Policy:** Ready / calculating\n"
             f"**Beige Turns:** {beige} turns\n"
-            f"**Vacation:** {vacation} turns"
+            f"**Vacation:** {vacation} turns\n\n"
+            f"*City, Color and Policy timers will use absolute-turn tracking "
+            f"in the next refinement (same method Locutus uses).*"
         )
+
         embed = embeds.info("Nation Timers", text)
         await interaction.response.send_message(embed=embed, ephemeral=True)
-
 
 class Link(commands.Cog):
     def __init__(self, bot: commands.Bot):
