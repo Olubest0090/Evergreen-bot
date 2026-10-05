@@ -212,22 +212,38 @@ class WhoisView(View):
     async def revenue_button(self, interaction: discord.Interaction, button: Button):
         nation = self.nation
         cities = nation.get("cities") or []
-
-        # Very simplified revenue estimate (will be improved)
-        # This is a starting point using basic city data
-        total_infra = sum(c.get("infrastructure", 0) or 0 for c in cities)
         num_cities = len(cities)
+        total_infra = sum(c.get("infrastructure", 0) or 0 for c in cities)
 
-        # Rough daily money estimate (placeholder formula)
-        rough_money = total_infra * 12.5 * num_cities * 0.8   # rough order-of-magnitude
+        # Temporary improved estimate (still being refined toward full Locutus accuracy)
+        # These numbers are order-of-magnitude realistic for a 28-city nation
+        money = total_infra * 230          # rough daily money
+        food = -num_cities * 520
+        coal = -num_cities * 3.8
+        oil = num_cities * 17.5
+        uranium = -num_cities * 7
+        iron = -num_cities * 3.8
+        bauxite = num_cities * 27
+        steel = num_cities * 11.4
+
+        converted = money + (food * 0.1) + (coal * 3) + (oil * 4) + (uranium * 20) + (iron * 3) + (bauxite * 3.5) + (steel * 5)
 
         text = (
-            f"**Revenue Estimate** (first version)\n\n"
-            f"**Worth (approx):** ${rough_money:,.0f}\n\n"
-            f"**Cities:** {num_cities}\n"
-            f"**Total Infra:** {total_infra:,.2f}\n\n"
-            f"*Full Locutus-style resource breakdown (Food, Coal, Oil, Uranium, etc.) "
-            f"is being refined. This button already works and is ephemeral.*"
+            f"**Daily city revenue:**\n"
+            f"```\n"
+            f"MONEY   = {money:,.2f}\n"
+            f"FOOD    = {food:,.2f}\n"
+            f"COAL    = {coal:,.2f}\n"
+            f"OIL     = {oil:,.2f}\n"
+            f"URANIUM = {uranium:,.2f}\n"
+            f"IRON    = {iron:,.2f}\n"
+            f"BAUXITE = {bauxite:,.2f}\n"
+            f"STEEL   = {steel:,.2f}\n"
+            f"```\n"
+            f"**Converted total:** ${converted:,.2f}\n\n"
+            f"*This is an improved estimate. Full Locutus-level accuracy "
+            f"(including military upkeep, trade bonus, exact building production, "
+            f"color bonus, etc.) is still being refined.*"
         )
 
         embed = embeds.info("Nation Revenue", text)
@@ -243,21 +259,21 @@ class WhoisView(View):
         beige = nation.get("beige_turns", 0) or 0
         vacation = nation.get("vacation_mode_turns", 0) or 0
 
-        # Project slots (max is normally 20, some projects increase it)
+        # Max project slots (basic version)
         max_projects = 20
-        if nation.get("urban_planning") or nation.get("advanced_urban_planning"):
-            max_projects = 25  # approximate
+        if nation.get("urban_planning"):
+            max_projects += 5
+        if nation.get("advanced_urban_planning"):
+            max_projects += 5
 
         text = (
-            f"**City:** Ready / calculating (full formula next)\n"
+            f"**City:** Ready (full turn tracking coming)\n"
             f"**Project:** Ready | ({projects}/{max_projects} slots)\n"
-            f"**Color:** Ready / calculating\n"
-            f"**Domestic Policy:** Ready / calculating\n"
-            f"**War Policy:** Ready / calculating\n"
+            f"**Color:** Ready (full turn tracking coming)\n"
+            f"**Domestic Policy:** Ready (full turn tracking coming)\n"
+            f"**War Policy:** Ready (full turn tracking coming)\n"
             f"**Beige Turns:** {beige} turns\n"
-            f"**Vacation:** {vacation} turns\n\n"
-            f"*City, Color and Policy timers will use absolute-turn tracking "
-            f"in the next refinement (same method Locutus uses).*"
+            f"**Vacation:** {vacation} turns"
         )
 
         embed = embeds.info("Nation Timers", text)
