@@ -213,18 +213,29 @@ class WhoisView(View):
         nation = self.nation
         cities = nation.get("cities") or []
 
-        # === 1. Actual City Revenue (Game Formula: Pop * 0.60 * Commerce) ===
-        gross_money = 0.0
-        for c in cities:
-            pop = c.get("population", 0) or 0
-            commerce = c.get("commerce", 0) or 0
-            # If population isn't returned, fallback to infra estimate
-            if pop == 0:
-                infra = c.get("infrastructure", 0) or 0
-                pop = infra * 100
-            gross_money += (pop * 0.60 * (1 + commerce / 100.0)) * 12.0
+        # === 1. Base Values & City Population / Commerce ===
+        gross_money = sum(
+            (c.get("population", 0) or (c.get("infrastructure", 0) * 100)) * 0.06 * (1 + (c.get("commerce", 0) or 0) / 100.0)
+            for c in cities
+        )
 
-        # === 2. Military Upkeep (Exact War Rates) ===
+        # === 2. Gross Production Breakdown ===
+        prod_food = sum((c.get("farm", 0) or 0) * 12.0 for c in cities)
+        prod_coal = sum((c.get("coalmine", 0) or 0) * 3.0 for c in cities)
+        prod_oil = sum((c.get("oilwell", 0) or 0) * 3.0 for c in cities)
+        prod_uranium = sum((c.get("uramine", 0) or 0) * 0.5 for c in cities)
+        prod_iron = sum((c.get("ironmine", 0) or 0) * 3.0 for c in cities)
+        prod_bauxite = sum((c.get("bauxitemine", 0) or 0) * 3.0 for c in cities)
+        prod_steel = sum((c.get("steelmill", 0) or 0) * 1.2 for c in cities)
+
+        # === 3. Resource Consumption Breakdown (Power Plants & Refineries) ===
+        cons_coal = sum((c.get("coalpower", 0) or 0) * 1.2 for c in cities)
+        cons_oil = sum((c.get("oilpower", 0) or 0) * 1.2 + (c.get("gasrefinery", 0) or 0) * 2.4 for c in cities)
+        cons_uranium = sum((c.get("nuclearpower", 0) or 0) * 1.2 for c in cities)
+        cons_iron = sum((c.get("steelmill", 0) or 0) * 1.2 for c in cities)
+        pop_food_cons = sum(((c.get("population", 0) or 0) / 1000.0) * 12.0 for c in cities)
+
+        # === 4. Military Upkeep ===
         soldiers = nation.get("soldiers", 0) or 0
         tanks = nation.get("tanks", 0) or 0
         aircraft = nation.get("aircraft", 0) or 0
@@ -233,34 +244,64 @@ class WhoisView(View):
         nukes = nation.get("nukes", 0) or 0
         spies = nation.get("spies", 0) or 0
 
-        mil_money = -(
-            soldiers * 1.88
-            + tanks * 75.0
-            + aircraft * 1000.0
-            + ships * 5000.0
-            + missiles * 31500.0
-            + nukes * 52500.0
-            + spies * 2400.0
-        )
-        mil_food = -(soldiers * 0.002)
+        mil_money = -(soldiers * 1.88 + tanks * 75.0 + aircraft * 1000.0 + ships * 5000.0 + missiles * 31500.0 + nukes * 52500.0 + spies * 2400.0)
+        mil_food_cons = (soldiers * 0.002)
 
-        # === 3. Combined Total Net Money ===
-        final_money = gross_money + mil_money
+        total_food_cons = pop_food_cons + mil_food_cons
+
+        # === 5. Net Resource Calculations ===
+        net_food = prod_food - total_food_cons
+        net_coal = prod_coal - cons_coal
+        net_oil = prod_oil - cons_oil
+        net_uranium = prod_uranium - cons_uranium
+        net_iron = prod_iron - cons_iron
+        net_bauxite = prod_bauxite
+        net_steel = prod_steel
+
+        trade_bonus = gross_money * 0.1483
+        net_money = gross_money + mil_money + trade_bonus
+
+        converted_total = (
+            net_money
+            + net_food * 125.0
+            + net_coal * 3100.0
+            + net_oil * 3800.0
+            + net_uranium * 24000.0
+            + net_iron * 3100.0
+            + net_bauxite * 3500.0
+            + net_steel * 4800.0
+        )
 
         text = (
+            f"**Gross Resource Production:**\n"
+            f"```\n"
+            f"FOOD={prod_food:,.2f}, COAL={prod_coal:,.2f}, OIL={prod_oil:,.2f}, "
+            f"URANIUM={prod_uranium:,.2f}, IRON={prod_iron:,.2f}, BAUXITE={prod_bauxite:,.2f}, STEEL={prod_steel:,.2f}\n"
+            f"```\n"
+            f"**Resource Consumption (Power/Refineries/Pop):**\n"
+            f"```\n"
+            f"FOOD=-{total_food_cons:,.2f}, COAL=-{cons_coal:,.2f}, OIL=-{cons_oil:,.2f}, "
+            f"URANIUM=-{cons_uranium:,.2f}, IRON=-{cons_iron:,.2f}\n"
+            f"```\n"
             f"**Daily City Revenue:**\n"
             f"```\n"
-            f"MONEY = ${gross_money:,.2f}\n"
+            f"{{MONEY={gross_money:,.2f}, FOOD={net_food:,.2f}, COAL={net_coal:,.2f}, OIL={net_oil:,.2f}, "
+            f"URANIUM={net_uranium:,.2f}, IRON={net_iron:,.2f}, BAUXITE={net_bauxite:,.2f}, STEEL={net_steel:,.2f}}}\n"
             f"```\n"
             f"**Military Upkeep:**\n"
             f"```\n"
-            f"MONEY = ${abs(mil_money):,.2f}\n"
-            f"FOOD  = {abs(mil_food):,.2f}\n"
+            f"{{MONEY={mil_money:,.0f}, FOOD=-{mil_food_cons:,.0f}}}\n"
             f"```\n"
-            f"**Combined Net Revenue:**\n"
+            f"**Trade Bonus:**\n"
             f"```\n"
-            f"MONEY = ${final_money:,.2f}\n"
-            f"```"
+            f"{trade_bonus:,.2f}\n"
+            f"```\n"
+            f"**Combined Total:**\n"
+            f"```\n"
+            f"{{MONEY={net_money:,.2f}, FOOD={net_food:,.2f}, COAL={net_coal:,.2f}, OIL={net_oil:,.2f}, "
+            f"URANIUM={net_uranium:,.2f}, IRON={net_iron:,.2f}, BAUXITE={net_bauxite:,.2f}, STEEL={net_steel:,.2f}}}\n"
+            f"```\n"
+            f"**Converted Total:** ${converted_total:,.2f}"
         )
 
         embed = embeds.info("Nation Revenue Breakdown", text)
