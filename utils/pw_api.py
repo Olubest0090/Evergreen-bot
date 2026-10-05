@@ -72,7 +72,7 @@ class PWApiClient:
                 stadium
                 barracks
                 factory
-                hangars
+                hangar
                 drydock
               }
               soldiers
@@ -111,7 +111,7 @@ class PWApiClient:
               spy_satellite
               moon_landing
               pirate_economy
-              recycling_consortium
+              recycling_initiative
               telecommunications_satellite
               green_technologies
               arable_land_agency
