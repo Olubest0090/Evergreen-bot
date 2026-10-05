@@ -212,73 +212,93 @@ class WhoisView(View):
     async def revenue_button(self, interaction: discord.Interaction, button: Button):
         nation = self.nation
         cities = nation.get("cities") or []
-        num_cities = len(cities)
+
+        # === 1. Base City Revenue & Population ===
         total_infra = sum(c.get("infrastructure", 0) or 0 for c in cities)
+        gross_income = total_infra * 230.0 * 12
 
-        # === Daily City Revenue (improved estimate) ===
-        money = total_infra * 230.0
-        food = -num_cities * 525.0
-        coal = -num_cities * 3.79
-        oil = num_cities * 17.46
-        uranium = -num_cities * 6.96
-        iron = -num_cities * 3.79
-        bauxite = num_cities * 27.1
-        steel = num_cities * 11.37
+        # === 2. Exact Building Production & Consumption (Daily) ===
+        daily_coal = 0.0
+        daily_oil = 0.0
+        daily_uranium = 0.0
+        daily_iron = 0.0
+        daily_bauxite = 0.0
+        daily_steel = 0.0
+        daily_food_prod = 0.0
 
-        # === Military Upkeep (rough) ===
+        for c in cities:
+            # Resource Mines & Production
+            daily_coal += (c.get("coalmine", 0) or 0) * 12.0
+            daily_uranium += (c.get("uramine", 0) or 0) * 12.0
+            daily_iron += (c.get("ironmine", 0) or 0) * 12.0
+            daily_bauxite += (c.get("bauxitemine", 0) or 0) * 12.0
+            daily_steel += (c.get("steelmill", 0) or 0) * 12.0
+            daily_food_prod += (c.get("farm", 0) or 0) * 12.0
+
+            # Oil Production vs Oil Power & Refinery Consumption
+            oil_wells = (c.get("oilwell", 0) or 0) * 12.0
+            oil_power_usage = (c.get("oilpower", 0) or 0) * 12.0
+            refinery_usage = (c.get("gasrefinery", 0) or 0) * 24.0
+            daily_oil += (oil_wells - oil_power_usage - refinery_usage)
+
+            # Coal Power Consumption
+            coal_power_usage = (c.get("coalpower", 0) or 0) * 12.0
+            daily_coal -= coal_power_usage
+
+        # === 3. Military Upkeep (Screenshot Exacts) ===
         soldiers = nation.get("soldiers", 0) or 0
         tanks = nation.get("tanks", 0) or 0
         aircraft = nation.get("aircraft", 0) or 0
         ships = nation.get("ships", 0) or 0
+        missiles = nation.get("missiles", 0) or 0
+        nukes = nation.get("nukes", 0) or 0
+        spies = nation.get("spies", 0) or 0
 
-        mil_money = -(soldiers * 0.1 + tanks * 1.5 + aircraft * 25 + ships * 50) * 12   # daily-ish
-        mil_food = -(soldiers * 0.01)
+        mil_money = -(
+            soldiers * 1.88
+            + tanks * 75.0
+            + aircraft * 1000.0
+            + ships * 5000.0
+            + missiles * 31500.0
+            + nukes * 52500.0
+            + spies * 2400.0
+        )
+        mil_food = -(soldiers * 0.002)
 
-        # === Color / Trade Bonus (placeholder – will be refined) ===
-        trade_bonus = money * 0.145   # approximate color trade bonus
-
-        # === Combined ===
-        final_money = money + mil_money + trade_bonus
-        final_food = food + mil_food
-        final_coal = coal
-        final_oil = oil
-        final_uranium = uranium
-        final_iron = iron
-        final_bauxite = bauxite
-        final_steel = steel
+        # === 4. Combined Net Totals ===
+        final_money = gross_income + mil_money
+        final_food = daily_food_prod + mil_food
+        final_coal = daily_coal
+        final_oil = daily_oil
+        final_uranium = daily_uranium
+        final_iron = daily_iron
+        final_bauxite = daily_bauxite
+        final_steel = daily_steel
 
         converted = (
             final_money
-            + final_food * 0.12
-            + final_coal * 3.2
-            + final_oil * 4.1
-            + final_uranium * 22
-            + final_iron * 3.2
-            + final_bauxite * 3.6
-            + final_steel * 5.2
+            + final_food * 125.0
+            + final_coal * 3100.0
+            + final_oil * 3800.0
+            + final_uranium * 24000.0
+            + final_iron * 3100.0
+            + final_bauxite * 3500.0
+            + final_steel * 4800.0
         )
 
         text = (
-            f"**Daily city revenue:**\n"
+            f"**Daily Gross City Revenue:**\n"
             f"```\n"
-            f"MONEY   = {money:,.2f}\n"
-            f"FOOD    = {food:,.2f}\n"
-            f"COAL    = {coal:,.2f}\n"
-            f"OIL     = {oil:,.2f}\n"
-            f"URANIUM = {uranium:,.2f}\n"
-            f"IRON    = {iron:,.2f}\n"
-            f"BAUXITE = {bauxite:,.2f}\n"
-            f"STEEL   = {steel:,.2f}\n"
+            f"MONEY = ${gross_income:,.2f}\n"
             f"```\n"
-            f"**Military upkeep:**\n"
+            f"**Daily Military Upkeep:**\n"
             f"```\n"
-            f"MONEY = {mil_money:,.0f}\n"
-            f"FOOD  = {mil_food:,.0f}\n"
+            f"MONEY = ${abs(mil_money):,.2f}\n"
+            f"FOOD  = {abs(mil_food):,.2f}\n"
             f"```\n"
-            f"**Trade / Color bonus:** {trade_bonus:,.2f}\n\n"
-            f"**Combined Total:**\n"
+            f"**Combined Net Production (Daily):**\n"
             f"```\n"
-            f"MONEY   = {final_money:,.2f}\n"
+            f"MONEY   = ${final_money:,.2f}\n"
             f"FOOD    = {final_food:,.2f}\n"
             f"COAL    = {final_coal:,.2f}\n"
             f"OIL     = {final_oil:,.2f}\n"
@@ -287,10 +307,10 @@ class WhoisView(View):
             f"BAUXITE = {final_bauxite:,.2f}\n"
             f"STEEL   = {final_steel:,.2f}\n"
             f"```\n"
-            f"**Converted total:** ${converted:,.2f}"
+            f"**Converted Overall Net Value:** ${converted:,.2f}"
         )
 
-        embed = embeds.info("Nation Revenue", text)
+        embed = embeds.info("Nation Revenue Breakdown", text)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @discord.ui.button(label="Timers", style=discord.ButtonStyle.secondary, emoji="⏱️")
