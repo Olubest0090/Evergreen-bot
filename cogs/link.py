@@ -213,39 +213,18 @@ class WhoisView(View):
         nation = self.nation
         cities = nation.get("cities") or []
 
-        # === 1. Base City Revenue & Population ===
-        total_infra = sum(c.get("infrastructure", 0) or 0 for c in cities)
-        gross_income = total_infra * 230.0 * 12
-
-        # === 2. Exact Building Production & Consumption (Daily) ===
-        daily_coal = 0.0
-        daily_oil = 0.0
-        daily_uranium = 0.0
-        daily_iron = 0.0
-        daily_bauxite = 0.0
-        daily_steel = 0.0
-        daily_food_prod = 0.0
-
+        # === 1. Actual City Revenue (Game Formula: Pop * 0.60 * Commerce) ===
+        gross_money = 0.0
         for c in cities:
-            # Resource Mines & Production
-            daily_coal += (c.get("coalmine", 0) or 0) * 12.0
-            daily_uranium += (c.get("uramine", 0) or 0) * 12.0
-            daily_iron += (c.get("ironmine", 0) or 0) * 12.0
-            daily_bauxite += (c.get("bauxitemine", 0) or 0) * 12.0
-            daily_steel += (c.get("steelmill", 0) or 0) * 12.0
-            daily_food_prod += (c.get("farm", 0) or 0) * 12.0
+            pop = c.get("population", 0) or 0
+            commerce = c.get("commerce", 0) or 0
+            # If population isn't returned, fallback to infra estimate
+            if pop == 0:
+                infra = c.get("infrastructure", 0) or 0
+                pop = infra * 100
+            gross_money += (pop * 0.60 * (1 + commerce / 100.0)) * 12.0
 
-            # Oil Production vs Oil Power & Refinery Consumption
-            oil_wells = (c.get("oilwell", 0) or 0) * 12.0
-            oil_power_usage = (c.get("oilpower", 0) or 0) * 12.0
-            refinery_usage = (c.get("gasrefinery", 0) or 0) * 24.0
-            daily_oil += (oil_wells - oil_power_usage - refinery_usage)
-
-            # Coal Power Consumption
-            coal_power_usage = (c.get("coalpower", 0) or 0) * 12.0
-            daily_coal -= coal_power_usage
-
-        # === 3. Military Upkeep (Screenshot Exacts) ===
+        # === 2. Military Upkeep (Exact War Rates) ===
         soldiers = nation.get("soldiers", 0) or 0
         tanks = nation.get("tanks", 0) or 0
         aircraft = nation.get("aircraft", 0) or 0
@@ -265,49 +244,23 @@ class WhoisView(View):
         )
         mil_food = -(soldiers * 0.002)
 
-        # === 4. Combined Net Totals ===
-        final_money = gross_income + mil_money
-        final_food = daily_food_prod + mil_food
-        final_coal = daily_coal
-        final_oil = daily_oil
-        final_uranium = daily_uranium
-        final_iron = daily_iron
-        final_bauxite = daily_bauxite
-        final_steel = daily_steel
-
-        converted = (
-            final_money
-            + final_food * 125.0
-            + final_coal * 3100.0
-            + final_oil * 3800.0
-            + final_uranium * 24000.0
-            + final_iron * 3100.0
-            + final_bauxite * 3500.0
-            + final_steel * 4800.0
-        )
+        # === 3. Combined Total Net Money ===
+        final_money = gross_money + mil_money
 
         text = (
-            f"**Daily Gross City Revenue:**\n"
+            f"**Daily City Revenue:**\n"
             f"```\n"
-            f"MONEY = ${gross_income:,.2f}\n"
+            f"MONEY = ${gross_money:,.2f}\n"
             f"```\n"
-            f"**Daily Military Upkeep:**\n"
+            f"**Military Upkeep:**\n"
             f"```\n"
             f"MONEY = ${abs(mil_money):,.2f}\n"
             f"FOOD  = {abs(mil_food):,.2f}\n"
             f"```\n"
-            f"**Combined Net Production (Daily):**\n"
+            f"**Combined Net Revenue:**\n"
             f"```\n"
-            f"MONEY   = ${final_money:,.2f}\n"
-            f"FOOD    = {final_food:,.2f}\n"
-            f"COAL    = {final_coal:,.2f}\n"
-            f"OIL     = {final_oil:,.2f}\n"
-            f"URANIUM = {final_uranium:,.2f}\n"
-            f"IRON    = {final_iron:,.2f}\n"
-            f"BAUXITE = {final_bauxite:,.2f}\n"
-            f"STEEL   = {final_steel:,.2f}\n"
-            f"```\n"
-            f"**Converted Overall Net Value:** ${converted:,.2f}"
+            f"MONEY = ${final_money:,.2f}\n"
+            f"```"
         )
 
         embed = embeds.info("Nation Revenue Breakdown", text)
