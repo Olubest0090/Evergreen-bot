@@ -506,7 +506,8 @@ class Link(commands.Cog):
         discord_user = None
         nation_data = None
 
-        try:
+try:
+            print("=== WHOIS STARTED ===")
             if member:
                 nation_id = await database.get_nation_for_user(member.id)
                 if not nation_id:
@@ -514,16 +515,20 @@ class Link(commands.Cog):
                         embed=embeds.info("Not Linked", f"{member.mention} has not linked a nation.")
                     )
                     return
+                print(f"=== Fetching nation {nation_id} ===")
                 nation_data = await self.bot.pw_client.get_nation(nation_id)
+                print("=== Nation fetched successfully ===")
                 discord_user = member
             else:
+                print(f"=== Resolving nation {nation} ===")
                 nation_data = await resolve_nation(self.bot.pw_client, nation)
+                print("=== Nation resolved ===")
 
             if not nation_data:
                 await interaction.followup.send(
                     embed=embeds.error("Nation Not Found", "Could not find that nation.")
                 )
-            return
+                return
 
             off_wars = nation_data.get("offensive_wars") or []
             def_wars = nation_data.get("defensive_wars") or []
@@ -531,14 +536,11 @@ class Link(commands.Cog):
             def_count = sum(1 for w in def_wars if (w.get("turns_left") or 0) > 0)
 
         except Exception as e:
+            print(f"=== WHOIS ERROR: {e} ===")
             await interaction.followup.send(
                 embed=embeds.error("Lookup Failed", f"Error contacting the P&W API: `{e}`")
             )
             return
-
-        embed = build_nation_embed(nation_data, off_count, def_count, discord_user)
-        view = WhoisView(nation_data)
-        await interaction.followup.send(embed=embed, view=view)
 
     @app_commands.command(
         name="autolink",
