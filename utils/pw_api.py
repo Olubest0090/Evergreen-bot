@@ -27,7 +27,7 @@ class PWApiClient:
             return data["data"]
 
     async def get_nation(self, nation_id: int) -> dict | None:
-        # Expanded query for full /whois + revenue + timers
+        # Lighter query so /whois works again
         query = """
         query($id: [Int]) {
           nations(id: $id, first: 1) {
@@ -46,34 +46,25 @@ class PWApiClient:
                 infrastructure
                 land
                 powered
-                # Buildings / improvements needed for revenue
                 coalmine
                 oilwell
                 uramine
                 bauxitemine
-                leadmine
                 ironmine
                 farm
                 oilpower
                 coalpower
                 nuclearpower
-                windpower
                 gasrefinery
                 steelmill
-                aluminumrefinery
-                munitionsfactory
-                police_station
-                hospital
-                recyclingcenter
-                subway
+                hangar
+                drydock
                 supermarket
                 bank
                 mall
                 stadium
-                barracks
-                factory
-                hangar
-                drydock
+                subway
+                hospital
               }
               soldiers
               tanks
@@ -90,40 +81,11 @@ class PWApiClient:
               domestic_policy
               war_policy
               projects
-              # Full project list (boolean flags)
-              iron_works
-              bauxite_works
-              arms_stockpile
-              emergency_gasoline_reserve
               mass_irrigation
               international_trade_center
-              missile_launch_pad
-              nuclear_research_facility
-              iron_dome
-              vital_defense_system
-              central_intelligence_agency
-              center_for_civil_engineering
-              propaganda_bureau
-              uranium_enrichment_program
+              telecommunications_satellite
               urban_planning
               advanced_urban_planning
-              space_program
-              spy_satellite
-              moon_landing
-              pirate_economy
-              recycling_initiative
-              telecommunications_satellite
-              green_technologies
-              arable_land_agency
-              clinical_research_center
-              specialized_police_training_program
-              advanced_engineering_corps
-              government_support_agency
-              research_and_development_center
-              resource_production_center
-              activity_center
-              advanced_pirate_economy
-              # Wars
               offensive_wars {
                 id turns_left naval_blockade att_id def_id
                 defender { id nation_name alliance_id }
