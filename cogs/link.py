@@ -203,51 +203,12 @@ def build_nation_embed(
     return embed
 
 
-# Locutus-Aligned Daily Revenue Engine
-COLOR_TRADE_BONUSES = {
-    "aqua": 0.1501, "black": 0.1460, "blue": 0.1428, "brown": 0.1380,
-    "green": 0.1420, "lavender": 0.1520, "lime": 0.1511, "maroon": 0.1500,
-    "orange": 0.1450, "pink": 0.1421, "purple": 0.1507, "red": 0.1400,
-    "sky": 0.1470, "turquoise": 0.1527, "white": 0.1200, "yellow": 0.1388,
-    "beige": 0.0, "gray": 0.0
-}
-
-async def fetch_live_market_prices() -> dict:
-    prices = {
-        "food": 125.0, "coal": 3100.0, "oil": 3800.0,
-        "uranium": 24000.0, "iron": 3100.0, "bauxite": 3500.0, "steel": 4800.0
-    }
-    query = """
-    {
-      tradeprices(first: 10) {
-        data {
-          resource
-          avgprice
-        }
-      }
-    }
-    """
-    try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
-            async with session.post("https://api.politicsandwar.com/graphql", json={"query": query}) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    trade_data = data.get("data", {}).get("tradeprices", {}).get("data", [])
-                    for item in trade_data:
-                        res = str(item.get("resource")).lower()
-                        if res in prices:
-                            prices[res] = float(item.get("avgprice", prices[res]))
-    except Exception:
-        pass
-    return prices
-
-
 class WhoisView(View):
     def __init__(self, nation: dict, timeout: float = 180):
         super().__init__(timeout=timeout)
         self.nation = nation
 
-@discord.ui.button(label="Revenue", style=discord.ButtonStyle.primary, emoji="💰")
+    @discord.ui.button(label="Revenue", style=discord.ButtonStyle.primary, emoji="💰")
     async def revenue_button(self, interaction: discord.Interaction, button: Button):
         await interaction.response.defer(ephemeral=True)
 
@@ -257,7 +218,7 @@ class WhoisView(View):
 
             has_mass_irrigation = bool(nation.get("mass_irrigation"))
 
-            # === PRODUCTION (real rates from wiki) ===
+            # PRODUCTION (wiki rates)
             prod_food = 0.0
             prod_coal = 0.0
             prod_oil = 0.0
@@ -268,7 +229,6 @@ class WhoisView(View):
 
             for c in cities:
                 land = c.get("land", 0) or 0
-                # Farms
                 if has_mass_irrigation:
                     prod_food += (land * 3 / 100)
                 else:
@@ -281,7 +241,7 @@ class WhoisView(View):
                 prod_bauxite  += (c.get("bauxitemine", 0) or 0) * 3
                 prod_steel    += (c.get("steelmill", 0) or 0) * 9
 
-            # === CONSUMPTION ===
+            # CONSUMPTION
             cons_food = 0.0
             cons_coal = 0.0
             cons_oil = 0.0
@@ -295,11 +255,10 @@ class WhoisView(View):
                 cons_uranium  += (c.get("nuclearpower", 0) or 0) * 2.4
                 cons_iron     += (c.get("steelmill", 0) or 0) * 3
 
-            # Population food (conservative)
             total_infra = sum(c.get("infrastructure", 0) or 0 for c in cities)
             cons_food += (total_infra * 100 / 1000) * 0.5
 
-            # === NET ===
+            # NET
             net_food     = prod_food - cons_food
             net_coal     = prod_coal - cons_coal
             net_oil      = prod_oil - cons_oil
@@ -310,31 +269,20 @@ class WhoisView(View):
             net_money    = 0.0
 
             text = (
-                f"**Production:**
-"
-                f"```
-"
+                f"**Production:**\n"
+                f"```\n"
                 f"{{FOOD={prod_food:,.2f}, COAL={prod_coal:,.2f}, OIL={prod_oil:,.2f}, "
-                f"URANIUM={prod_uranium:,.2f}, IRON={prod_iron:,.2f}, BAUXITE={prod_bauxite:,.2f}, STEEL={prod_steel:,.2f}}}
-"
-                f"```
-"
-                f"**Consumption:**
-"
-                f"```
-"
+                f"URANIUM={prod_uranium:,.2f}, IRON={prod_iron:,.2f}, BAUXITE={prod_bauxite:,.2f}, STEEL={prod_steel:,.2f}}}\n"
+                f"```\n"
+                f"**Consumption:**\n"
+                f"```\n"
                 f"{{FOOD={-cons_food:,.2f}, COAL={-cons_coal:,.2f}, OIL={-cons_oil:,.2f}, "
-                f"URANIUM={-cons_uranium:,.2f}, IRON={-cons_iron:,.2f}}}
-"
-                f"```
-"
-                f"**Net:**
-"
-                f"```
-"
+                f"URANIUM={-cons_uranium:,.2f}, IRON={-cons_iron:,.2f}}}\n"
+                f"```\n"
+                f"**Net:**\n"
+                f"```\n"
                 f"{{MONEY={net_money:,.2f}, FOOD={net_food:,.2f}, COAL={net_coal:,.2f}, OIL={net_oil:,.2f}, "
-                f"URANIUM={net_uranium:,.2f}, IRON={net_iron:,.2f}, BAUXITE={net_bauxite:,.2f}, STEEL={net_steel:,.2f}}}
-"
+                f"URANIUM={net_uranium:,.2f}, IRON={net_iron:,.2f}, BAUXITE={net_bauxite:,.2f}, STEEL={net_steel:,.2f}}}\n"
                 f"```"
             )
 
@@ -347,14 +295,10 @@ class WhoisView(View):
     @discord.ui.button(label="Timers", style=discord.ButtonStyle.secondary, emoji="⏱️")
     async def timers_button(self, interaction: discord.Interaction, button: Button):
         nation = self.nation
-        cities = nation.get("cities") or []
-        num_cities = len(cities)
         projects = nation.get("projects", 0) or 0
-
         beige = nation.get("beige_turns", 0) or 0
         vacation = nation.get("vacation_mode_turns", 0) or 0
 
-        # Max project slots (basic version)
         max_projects = 20
         if nation.get("urban_planning"):
             max_projects += 5
@@ -373,6 +317,7 @@ class WhoisView(View):
 
         embed = embeds.info("Nation Timers", text)
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
 class Link(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -504,7 +449,7 @@ class Link(commands.Cog):
     @app_commands.command(name="unlink", description="Remove a nation link")
     @app_commands.describe(member="Who to unlink (defaults to yourself; unlinking others needs Admin or MA)")
     async def unlink(self, interaction: discord.Interaction, member: discord.Member = None):
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        await interaction.response.defer(ephemeral=True)
         target = member or interaction.user
 
         if target.id != interaction.user.id:
@@ -578,7 +523,7 @@ class Link(commands.Cog):
                 await interaction.followup.send(
                     embed=embeds.error("Nation Not Found", "Could not find that nation.")
                 )
-                return
+            return
 
             off_wars = nation_data.get("offensive_wars") or []
             def_wars = nation_data.get("defensive_wars") or []
