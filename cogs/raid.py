@@ -58,7 +58,7 @@ def free_defensive_slots(n: dict) -> int:
 
 
 def loot_estimate(n: dict, my_strength: float) -> float:
-    """Public loot score calibrated against real spy data."""
+    """Public loot score calibrated against real spy data (Wyzfert \~$14.5M)."""
     cities = n.get("num_cities") or len(n.get("cities") or []) or 1
     infra = n.get("total_infra") or 0
 
@@ -70,30 +70,30 @@ def loot_estimate(n: dict, my_strength: float) -> float:
         except Exception:
             pass
 
-    # Base from infra + cities (Wyzfert had \~$14.5M with 34c / 75k infra)
-    score = infra * 1.1 + cities * 1800
+    # Heavily weighted toward infra + cities (calibrated so \~75k infra / 34c ≈ $12-15M)
+    score = infra * 160 + cities * 85000
 
-    # Strong inactivity bonus
-    score += min(inactive_days, 90) * 120
+    # Inactivity bonus
+    score += min(inactive_days, 120) * 25000
 
-    # Prefer free slots heavily
+    # Free slots bonus
     slots = free_defensive_slots(n)
-    score += slots * 4000
+    score += slots * 800000
 
     # Prefer weaker targets
     their_str = military_strength(n)
     if my_strength > 0 and their_str > 0:
         ratio = my_strength / max(their_str, 1)
         if ratio >= 3:
-            score *= 1.45
+            score *= 1.35
         elif ratio >= 1.8:
-            score *= 1.25
+            score *= 1.15
         elif ratio < 0.9:
-            score *= 0.55
+            score *= 0.5
 
     # Beige penalty
     if (n.get("beige_turns") or 0) > 0:
-        score *= 0.65
+        score *= 0.6
 
     return score
 
