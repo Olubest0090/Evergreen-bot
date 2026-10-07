@@ -108,6 +108,18 @@ class Alerts(commands.Cog):
             )
         )
 
+    @alerts_group.command(name="autocounter", description="Toggle automatic counter-request DMs on defensive wars")
+    @app_commands.describe(enabled="True = send counter DMs, False = disable them")
+    async def autocounter(self, interaction: discord.Interaction, enabled: bool):
+        await database._upsert_alerts_config(interaction.guild_id, auto_counter_enabled=enabled)
+        status = "enabled" if enabled else "disabled"
+        await interaction.response.send_message(
+            embed=embeds.success(
+                "Auto-Counter Updated",
+                f"Automatic counter-request DMs are now **{status}**.",
+            )
+        )
+
     @alerts_group.command(name="list", description="Show current alert configuration")
     async def list_config(self, interaction: discord.Interaction):
         config = await database.get_alerts_config(interaction.guild_id)
@@ -125,6 +137,7 @@ class Alerts(commands.Cog):
             f"**Defensive War Alerts:** {fmt_channel(config.get('defense_channel_id'))}",
             f"**Offensive War Alerts:** {fmt_channel(config.get('offensive_channel_id'))}",
             f"**Espionage Alerts:** {fmt_channel(config.get('espionage_channel_id'))}",
+            f"**Auto-Counter DMs:** {'ON' if config.get('auto_counter_enabled', True) else 'OFF'}",
         ]
         await interaction.response.send_message(
             embed=embeds.info("Alert Configuration", "\n".join(lines))
@@ -247,7 +260,8 @@ class Alerts(commands.Cog):
             if not sent:
                 return  # channel unreachable this cycle, retry next time instead of marking as done
             await database.mark_war_alerted(guild_id, war_id, "alerted_defense")
-            await self._dispatch_counter_requests(guild_id, config, war)
+            if config.get("auto_counter_enabled", True):
+                await self._dispatch_counter_requests(guild_id, config, war)
 
         elif side == "offense":
             if await database.is_war_alerted(guild_id, war_id, "alerted_offensive"):
