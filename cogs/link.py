@@ -506,7 +506,7 @@ class Link(commands.Cog):
         discord_user = None
         nation_data = None
 
-                try:
+        try:
             print("=== WHOIS STARTED ===")
             if member:
                 nation_id = await database.get_nation_for_user(member.id)
