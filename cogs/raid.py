@@ -1,5 +1,6 @@
 """
 /raid — Find good raid targets for the linked nation.
+Uses a calibrated public estimate (infra + inactivity + military).
 """
 
 import re
@@ -13,7 +14,6 @@ from discord.ui import View, Button
 from utils import database, embeds
 from cogs.coalitions import is_dnr_protected
 
-# ---------- helpers ----------
 
 def parse_duration(text: str) -> timedelta:
     text = text.strip().lower()
@@ -58,7 +58,11 @@ def free_defensive_slots(n: dict) -> int:
 
 
 def loot_estimate(n: dict, my_strength: float) -> float:
-    """Public loot score calibrated against real spy data (Wyzfert \~$14.5M)."""
+    """
+    Calibrated against real spy + Locutus data.
+    Goal: Wyzfert-style nation (34c / 75k infra / very inactive / almost no mil)
+    should land around $25M–$40M estimated loot.
+    """
     cities = n.get("num_cities") or len(n.get("cities") or []) or 1
     infra = n.get("total_infra") or 0
 
@@ -70,32 +74,32 @@ def loot_estimate(n: dict, my_strength: float) -> float:
         except Exception:
             pass
 
-    # Heavily weighted toward infra + cities (calibrated so \~75k infra / 34c ≈ $12-15M)
-    score = infra * 160 + cities * 85000
+    # Strong base from infra + cities
+    score = infra * 280 + cities * 220_000
 
-    # Inactivity bonus
-    score += min(inactive_days, 120) * 25000
+    # Heavy inactivity bonus (stockpile builds up)
+    score += min(inactive_days, 150) * 55_000
 
-    # Free slots bonus
+    # Free slots are valuable
     slots = free_defensive_slots(n)
-    score += slots * 800000
+    score += slots * 1_500_000
 
     # Prefer weaker targets
     their_str = military_strength(n)
     if my_strength > 0 and their_str > 0:
         ratio = my_strength / max(their_str, 1)
         if ratio >= 3:
-            score *= 1.35
+            score *= 1.4
         elif ratio >= 1.8:
-            score *= 1.15
+            score *= 1.2
         elif ratio < 0.9:
-            score *= 0.5
+            score *= 0.45
 
     # Beige penalty
     if (n.get("beige_turns") or 0) > 0:
-        score *= 0.6
+        score *= 0.55
 
-    return score
+    return max(score, 0)
 
 
 def format_money(value: float) -> str:
@@ -105,8 +109,6 @@ def format_money(value: float) -> str:
         return f"${value/1_000:.0f}k"
     return f"${value:.0f}"
 
-
-# ---------- View for pagination ----------
 
 class RaidView(View):
     def __init__(self, targets: list, me_name: str, inactive: str, page: int = 0):
@@ -151,17 +153,17 @@ class RaidView(View):
 
             lines.append(
                 f"**{i}. [{name}](https://politicsandwar.com/nation/id={nid})** ({alliance}) — est. {est}\n"
-                f"Cities: {cities} | Infra: {infra:,.0f} | Slots: {slots}/3 | Beige: {beige}\n"
+                f"Cities: {cities} | Infra: {infra:,.0f} | Spots: {slots}/3 | Beige: {beige}\n"
                 f"Military: `{mil}` | Last active: {last_str}"
             )
 
-        total_pages = (len(self.targets) - 1) // self.per_page + 1
+        total_pages = max(1, (len(self.targets) - 1) // self.per_page + 1)
         embed = embeds.info(
             f"Raid Targets for {self.me_name}",
             f"Showing page **{self.page + 1}/{total_pages}** • inactive ≥ **{self.inactive}** • {len(self.targets)} total\n\n"
             + "\n\n".join(lines)
         )
-        embed.set_footer(text="Sorted by estimated loot value • Use Pirate policy for +40% loot")
+        embed.set_footer(text="Estimated loot (public data) • Use Pirate policy for +40% loot")
         return embed
 
     @discord.ui.button(label="◀ Previous", style=discord.ButtonStyle.secondary)
@@ -181,8 +183,6 @@ class RaidView(View):
         else:
             await interaction.response.defer()
 
-
-# ---------- cog ----------
 
 class Raid(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -257,7 +257,7 @@ class Raid(commands.Cog):
             their_str = military_strength(n)
             if weak_only and their_str >= my_strength:
                 continue
-            if safe_only and their_str > 5000:  # very low military threshold
+            if safe_only and their_str > 5000:
                 continue
 
             try:
