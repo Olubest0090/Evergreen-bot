@@ -506,7 +506,7 @@ class Link(commands.Cog):
         discord_user = None
         nation_data = None
 
-try:
+        try:
             print("=== WHOIS STARTED ===")
             if member:
                 nation_id = await database.get_nation_for_user(member.id)
@@ -534,6 +534,26 @@ try:
             def_wars = nation_data.get("defensive_wars") or []
             off_count = sum(1 for w in off_wars if (w.get("turns_left") or 0) > 0)
             def_count = sum(1 for w in def_wars if (w.get("turns_left") or 0) > 0)
+
+            # Build Nation Embed
+            nation_name = nation_data.get("nation_name", "Unknown Nation")
+            leader_name = nation_data.get("leader_name", "Unknown Leader")
+            score = nation_data.get("score", 0)
+            alliance = nation_data.get("alliance", {}) or {}
+            alliance_name = alliance.get("name", "None") if isinstance(alliance, dict) else "None"
+
+            embed = discord.Embed(
+                title=f"{nation_name} ({leader_name})",
+                description=f"**Score:** {score:,.2f} | **Alliance:** {alliance_name}",
+                color=discord.Color.blue()
+            )
+            embed.add_field(name="Offensive Wars", value=str(off_count), inline=True)
+            embed.add_field(name="Defensive Wars", value=str(def_count), inline=True)
+
+            if discord_user:
+                embed.set_footer(text=f"Linked to @{discord_user.display_name}")
+
+            await interaction.followup.send(embed=embed)
 
         except Exception as e:
             print(f"=== WHOIS ERROR: {e} ===")
