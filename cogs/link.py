@@ -535,11 +535,12 @@ class Link(commands.Cog):
             off_count = sum(1 for w in off_wars if (w.get("turns_left") or 0) > 0)
             def_count = sum(1 for w in def_wars if (w.get("turns_left") or 0) > 0)
 
-            embed, view = build_nation_embed(nation_data, discord_user)
-            if view:
-                await interaction.followup.send(embed=embed, view=view)
+            result = build_nation_embed(nation_data, discord_user)
+            if isinstance(result, tuple):
+                embed, view = result[0], result[1]
+                await interaction.followup.send(embed=embed, view=view) if view else await interaction.followup.send(embed=embed)
             else:
-                await interaction.followup.send(embed=embed)
+                await interaction.followup.send(embed=result)
 
         except Exception as e:
             print(f"=== WHOIS ERROR: {e} ===")
