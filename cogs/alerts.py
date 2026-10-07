@@ -217,7 +217,7 @@ class Alerts(commands.Cog):
             await self._handle_war(guild_id, config, war, is_counter)
 
         await asyncio.gather(*[
-            self._handle_espionage_check(guild_id, config, member, alliance_id)
+            self._handle_espionage_check(guild_id, config, member, primary_alliance_id)
             for member in members
         ], return_exceptions=True)
 
