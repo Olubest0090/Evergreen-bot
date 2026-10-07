@@ -40,6 +40,7 @@ INITIAL_COGS = (
     "cogs.coalitions",
     "cogs.warroom",
     "cogs.counter",
+    "cogs.raid",
 )
 
 

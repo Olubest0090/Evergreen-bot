@@ -297,6 +297,41 @@ class PWApiClient:
         data = await self._query(query, {"min": min_score, "max": max_score})
         return data["nations"]["data"]
 
+
+    async def get_nations_for_raid(self, min_score: float, max_score: float) -> list[dict]:
+        """Richer query used by /raid."""
+        query = """
+        query($min: Float, $max: Float) {
+          nations(min_score: $min, max_score: $max, first: 500, vmode: false) {
+            data {
+              id
+              nation_name
+              leader_name
+              score
+              alliance_id
+              alliance_position
+              alliance { id name }
+              last_active
+              vacation_mode_turns
+              beige_turns
+              soldiers
+              tanks
+              aircraft
+              ships
+              num_cities
+              cities { infrastructure }
+              defensive_wars { turns_left }
+            }
+          }
+        }
+        """
+        data = await self._query(query, {"min": min_score, "max": max_score})
+        nations = data["nations"]["data"]
+        # Pre-calculate total infra
+        for n in nations:
+            n["total_infra"] = sum(c.get("infrastructure", 0) or 0 for c in (n.get("cities") or []))
+        return nations
+
     async def get_active_wars(self, alliance_id: int) -> list[dict]:
         war_fields = """
               id
