@@ -254,6 +254,9 @@ class WarRoom(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._missing_cycles: dict[tuple[int, int], int] = {}
+        # Remember war IDs per (guild, enemy) so we can still pull
+        # Victory / Alliance Loot after the war leaves the active list.
+        self._last_war_ids: dict[tuple[int, int], list[int]] = {}
         self.warroom_loop.start()
 
     async def cog_load(self):
@@ -532,13 +535,19 @@ class WarRoom(commands.Cog):
 
         wars = await self.bot.pw_client.get_active_wars(alliance_id)
 
-        # The P&W API returns IDs as text while our database stores them
-        # as numbers, so everything is keyed as int here.
         wars_by_enemy: dict[int, list] = {}
         for war in wars:
             enemy = war.get("attacker") if war.get("_side") == "defense" else war.get("defender")
             if enemy and enemy.get("id"):
-                wars_by_enemy.setdefault(int(enemy["id"]), []).append(war)
+                eid = int(enemy["id"])
+                wars_by_enemy.setdefault(eid, []).append(war)
+                # Keep a durable list of war IDs for this enemy so we can
+                # still fetch Victory/AllianceLoot after the war ends.
+                key = (guild_id, eid)
+                ids = self._last_war_ids.setdefault(key, [])
+                wid = int(war["id"])
+                if wid not in ids:
+                    ids.append(wid)
 
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=ATTACK_FEED_MAX_AGE_MINUTES)
 
@@ -547,26 +556,55 @@ class WarRoom(commands.Cog):
             if not channel:
                 continue
 
+            enemy_id = int(room["enemy_nation_id"])
+            key = (guild_id, enemy_id)
+            active = wars_by_enemy.get(enemy_id, [])
+
+            # Prefer live war objects; fall back to last known war IDs
+            # (needed for Victory / Alliance Loot on finished wars).
+            war_jobs: list[tuple[dict | None, int]] = []
+            if active:
+                for war in active:
+                    war_jobs.append((war, int(war["id"])))
+            else:
+                for wid in self._last_war_ids.get(key, []):
+                    war_jobs.append((None, wid))
+
+            if not war_jobs:
+                continue
+
             fresh = []
-            for war in wars_by_enemy.get(int(room["enemy_nation_id"]), []):
+            for war_obj, war_id in war_jobs:
                 try:
-                    attacks = await self.bot.pw_client.get_war_attacks(int(war["id"]))
+                    attacks = await self.bot.pw_client.get_war_attacks(war_id)
                 except Exception as e:
-                    print(f"[warroom] get_war_attacks failed for war {war['id']}: {e}")
+                    print(f"[warroom] get_war_attacks failed for war {war_id}: {e}")
                     continue
+
+                # If we only have a war id (ended war), load the war once
+                # so build_attack_embed still has attacker/defender names.
+                if war_obj is None and attacks:
+                    try:
+                        war_obj = await self.bot.pw_client.get_war(war_id)
+                    except Exception as e:
+                        print(f"[warroom] get_war failed for war {war_id}: {e}")
+                        war_obj = {"id": war_id, "attacker": {}, "defender": {}, "_side": "defense"}
+                    if not war_obj:
+                        war_obj = {"id": war_id, "attacker": {}, "defender": {}, "_side": "defense"}
+                    # Best-effort side tag for colouring embeds
+                    if "_side" not in war_obj:
+                        war_obj["_side"] = "defense"
 
                 for attack in attacks:
                     try:
                         when = datetime.fromisoformat(attack["date"].replace("Z", "+00:00"))
                     except Exception:
                         continue
-                    # Old history is skipped without being marked, so a
-                    # new room never gets flooded with past attacks.
                     if when < cutoff:
                         continue
                     if await database.is_attack_seen(guild_id, int(attack["id"])):
                         continue
-                    fresh.append((when, war, attack))
+                    fresh.append((when, war_obj or {"id": war_id, "attacker": {}, "defender": {}, "_side": "defense"}, attack))
 
             if not fresh:
                 continue
@@ -581,6 +619,7 @@ class WarRoom(commands.Cog):
                 continue
             for _, _, attack in batch:
                 await database.mark_attack_seen(guild_id, int(attack["id"]))
+
 
 
 
