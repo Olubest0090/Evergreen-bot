@@ -164,7 +164,7 @@ class RaidView(View):
 
             lines.append(
                 f"**{i}. [{name}](https://politicsandwar.com/nation/id={nid})** ({alliance}) — est. {est}\n"
-                f"Cities: {cities} | Infra: {infra:,.0f} | Spots: {slots}/3 | Beige: {beige}\n"
+                f"Cities: {cities} | Infra: {infra:,.0f} | Slots: {slots}/3 | Beige: {beige}\n"
                 f"Military: `{mil}` | Last active: {last_str}"
             )
 
@@ -207,6 +207,7 @@ class Raid(commands.Cog):
         include_beige="Include nations currently on beige",
         weak_only="Only show targets weaker than you",
         safe_only="Only very low military targets (safest raids)",
+        include_slotted="Include nations with 0 free defensive slots (default: hide them)",
     )
     async def raid(
         self,
@@ -217,6 +218,7 @@ class Raid(commands.Cog):
         include_beige: bool = False,
         weak_only: bool = False,
         safe_only: bool = False,
+        include_slotted: bool = False,
     ):
         await interaction.response.defer()
 
@@ -269,6 +271,10 @@ class Raid(commands.Cog):
             if weak_only and their_str >= my_strength:
                 continue
             if safe_only and their_str > 5000:
+                continue
+
+            # Hide fully slotted targets unless include_slotted=True
+            if not include_slotted and free_defensive_slots(n) <= 0:
                 continue
 
             try:
