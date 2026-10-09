@@ -53,7 +53,15 @@ def military_strength(n: dict) -> float:
 
 
 def free_defensive_slots(n: dict) -> int:
-    active = sum(1 for w in (n.get("defensive_wars") or []) if (w.get("turns_left") or 0) > 0)
+    """Count free defensive slots. Defaults to 3 if war data is missing."""
+    wars = n.get("defensive_wars")
+    if wars is None:
+        return 3  # no data → assume free
+    active = 0
+    for w in wars:
+        turns = w.get("turns_left")
+        if turns is not None and turns > 0:
+            active += 1
     return max(0, 3 - active)
 
 
@@ -80,9 +88,12 @@ def loot_estimate(n: dict, my_strength: float) -> float:
     # Heavy inactivity bonus (stockpile builds up)
     score += min(inactive_days, 150) * 55_000
 
-    # Free slots are valuable
+    # Free slots are very valuable — fully slotted targets sink
     slots = free_defensive_slots(n)
-    score += slots * 1_500_000
+    if slots == 0:
+        score *= 0.25          # heavy penalty
+    else:
+        score += slots * 2_000_000
 
     # Prefer weaker targets
     their_str = military_strength(n)
