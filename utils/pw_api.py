@@ -265,6 +265,7 @@ class PWApiClient:
                 def_id
                 victor
                 moneystolen
+                loot_info
                 infradestroyed
                 infra_destroyed_value
                 city_infra_before

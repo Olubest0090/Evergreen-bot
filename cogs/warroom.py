@@ -138,8 +138,8 @@ ATTACK_TYPE_LABELS = {
 }
 
 
-ATTACK_FEED_MAX_AGE_MINUTES = 30
-ATTACK_FEED_MAX_PER_CYCLE = 10
+ATTACK_FEED_MAX_AGE_MINUTES = 60
+ATTACK_FEED_MAX_PER_CYCLE = 15
 
 ATTACK_LABELS = {
     "GROUND": "⚔️ Ground Attack",
@@ -175,21 +175,20 @@ ATTACK_LABELS.update({
     "NAVALVSHIPS": "🚢 Naval Attack (Ships)",
 })
 
-NON_COMBAT_ATTACKS = {"FORTIFY", "PEACE", "VICTORY", "ALLIANCELOOT"}
+# Fortify / Peace stay non-combat. Victory & Alliance Loot must show loot.
+NON_COMBAT_ATTACKS = {"FORTIFY", "PEACE"}
+LOOT_ATTACKS = {"VICTORY", "ALLIANCELOOT"}
 
 
 def build_attack_embed(war: dict, attack: dict, when) -> discord.Embed:
     attacker = war.get("attacker") or {}
     defender = war.get("defender") or {}
 
-    # The attack record only carries IDs, so work out which of the two
-    # nations in this war actually made it.
     if str(attack.get("att_id")) == str(attacker.get("id")):
         actor, target = attacker, defender
     else:
         actor, target = defender, attacker
 
-    # Green when our member made the attack, red when the enemy did.
     our_nation = attacker if war.get("_side") == "offense" else defender
     ours = str(actor.get("id")) == str(our_nation.get("id"))
 
@@ -204,7 +203,24 @@ def build_attack_embed(war: dict, attack: dict, when) -> discord.Embed:
 
     lines = [f"{link(actor)} of **{ally(actor)}** → {link(target)} of **{ally(target)}**"]
 
-    if attack_type not in NON_COMBAT_ATTACKS:
+    if attack_type in LOOT_ATTACKS:
+        loot = attack.get("moneystolen") or 0
+        if loot > 0:
+            if attack_type == "ALLIANCELOOT":
+                lines.append(f"**Alliance loot:** **${loot:,.0f}**")
+            else:
+                lines.append(f"**Victory loot:** **${loot:,.0f}**")
+
+        loot_info = (attack.get("loot_info") or "").strip()
+        if loot_info:
+            if len(loot_info) > 900:
+                loot_info = loot_info[:900] + "…"
+            lines.append(f"**Loot details:** {loot_info}")
+
+        if not loot and not loot_info:
+            lines.append("*No loot amount reported by the API for this attack.*")
+
+    elif attack_type not in NON_COMBAT_ATTACKS:
         lines.append(f"Result: **{ATTACK_RESULTS.get(attack.get('success'), 'Unknown')}**")
 
         loot = attack.get("moneystolen") or 0
