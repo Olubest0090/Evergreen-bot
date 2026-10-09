@@ -41,7 +41,6 @@ INITIAL_COGS = (
     "cogs.warroom",
     "cogs.counter",
     "cogs.raid",
-    "cogs.warfind",
 )
 
 
