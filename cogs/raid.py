@@ -52,17 +52,22 @@ def military_strength(n: dict) -> float:
     )
 
 
-def free_defensive_slots(n: dict) -> int:
-    """Count free defensive slots. Defaults to 3 if war data is missing."""
+def used_defensive_slots(n: dict) -> int:
+    """How many defensive wars are active (0–3). Matches in-game 'Defensive Wars: X/3'."""
     wars = n.get("defensive_wars")
-    if wars is None:
-        return 3  # no data → assume free
+    if not wars:
+        return 0
     active = 0
     for w in wars:
         turns = w.get("turns_left")
         if turns is not None and turns > 0:
             active += 1
-    return max(0, 3 - active)
+    return min(active, 3)
+
+
+def free_defensive_slots(n: dict) -> int:
+    """Free slots = 3 - used."""
+    return max(0, 3 - used_defensive_slots(n))
 
 
 def loot_estimate(n: dict, my_strength: float) -> float:
@@ -153,7 +158,7 @@ class RaidView(View):
                     pass
 
             beige = n.get("beige_turns") or 0
-            slots = free_defensive_slots(n)
+            slots = used_defensive_slots(n)
             mil = (
                 f"{n.get('soldiers', 0):,}s "
                 f"{n.get('tanks', 0):,}t "
