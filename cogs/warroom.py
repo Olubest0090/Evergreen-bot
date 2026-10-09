@@ -459,11 +459,11 @@ class WarRoom(commands.Cog):
                     await self._grant_access(channel, discord_id)
 
         # Grace period: an enemy must be missing for 3 CONSECUTIVE
-        # sync cycles (~6 min) before we close its room. A single
+        # sync cycles (~6 min) before we close its room (\~1 hour). A single
         # missing cycle is treated as likely API flakiness/lag rather
         # than the war actually ending, to stop rooms from flapping
         # closed-then-recreated on a transient data hiccup.
-        MISSING_THRESHOLD = 3
+        MISSING_THRESHOLD = 30  # \~1 hour (30 × 120s)
         closed = 0
         existing_rooms = await database.get_all_war_rooms(guild_id)
         
@@ -489,7 +489,7 @@ class WarRoom(commands.Cog):
             channel = guild.get_channel(int(room["channel_id"]))
             if channel:
                 try:
-                    await channel.delete(reason="War ended: missing for 3 consecutive polls")
+                    await channel.delete(reason="War ended: missing for \~1 hour")
                 except discord.HTTPException:
                     pass
             await database.delete_war_room(guild_id, enemy_id)
