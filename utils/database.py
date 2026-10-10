@@ -434,3 +434,27 @@ async def update_war_room_missing_count(guild_id: int, enemy_nation_id: int, mis
     async with _session.patch(url, params=params, json=payload, headers=headers) as resp:
         if resp.status not in (200, 204):
             raise RuntimeError(f"Supabase error {resp.status}: {await resp.text()}")
+
+
+# ---- ai_knowledge ----
+async def add_ai_knowledge(guild_id: int, source: str, content: str, url: str | None = None) -> None:
+    api = f"{_base_url}/rest/v1/ai_knowledge"
+    payload = {"guild_id": guild_id, "source": source, "content": content, "url": url}
+    headers = {"Prefer": "return=minimal"}
+    async with _session.post(api, json=payload, headers=headers) as resp:
+        if resp.status not in (200, 201, 204):
+            raise RuntimeError(f"add_ai_knowledge failed: {resp.status} {await resp.text()}")
+
+
+async def list_ai_knowledge(guild_id: int, limit: int = 40) -> list[dict]:
+    api = f"{_base_url}/rest/v1/ai_knowledge"
+    params = {
+        "guild_id": f"eq.{guild_id}",
+        "select": "id,source,content,url,created_at",
+        "order": "created_at.desc",
+        "limit": str(limit),
+    }
+    async with _session.get(api, params=params) as resp:
+        if resp.status != 200:
+            return []
+        return await resp.json()

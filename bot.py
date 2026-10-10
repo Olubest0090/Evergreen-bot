@@ -28,6 +28,7 @@ log = logging.getLogger("evergreen-bot")
 INTENTS = discord.Intents.default()
 INTENTS.presences = True
 INTENTS.members = True
+INTENTS.message_content = True
 
 GUILD_ID = os.environ.get("GUILD_ID")
 TEST_GUILD = discord.Object(id=int(GUILD_ID)) if GUILD_ID else None
@@ -41,6 +42,7 @@ INITIAL_COGS = (
     "cogs.warroom",
     "cogs.counter",
     "cogs.raid",
+    "cogs.ai",
 )
 
 
