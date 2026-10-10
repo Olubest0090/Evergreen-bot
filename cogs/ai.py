@@ -45,31 +45,41 @@ async def _fetch_url_text(session: aiohttp.ClientSession, url: str) -> str:
         return f"[Fetch failed for {url}: {e}]"
 
 
-async def gemini_generate(session: aiohttp.ClientSession, system: str, user: str) -> str:
+async def gemini_generate(session, system: str, user: str) -> str:
+    import json
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        return "AI is not configured (missing GEMINI_API_KEY on Render)."
+        return "AI is not configured right now. Ask gov to check the bot settings."
 
     payload = {
         "system_instruction": {"parts": [{"text": system}]},
         "contents": [{"role": "user", "parts": [{"text": user}]}],
-        "generationConfig": {"temperature": 0.4, "maxOutputTokens": 1024},
+        "generationConfig": {"temperature": 0.55, "maxOutputTokens": 1024},
     }
     url = f"{GEMINI_URL}?key={api_key}"
     try:
-        async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-            data = await resp.json()
+        async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=45)) as resp:
+            raw = await resp.text()
+            try:
+                data = json.loads(raw)
+            except Exception:
+                print(f"[ai] bad JSON status={resp.status} body={raw[:400]}")
+                return "Brain lag — try again in a second."
             if resp.status != 200:
-                err = (data.get("error") or {}).get("message") or str(data)[:300]
-                return f"Gemini error: {err}"
+                err = (data.get("error") or {}).get("message") or raw[:300]
+                print(f"[ai] API error {resp.status}: {err}")
+                return "Couldn't reach the brain right now. Try again shortly."
             candidates = data.get("candidates") or []
             if not candidates:
-                return "Gemini returned no answer."
+                print(f"[ai] no candidates: {raw[:400]}")
+                return "Got nothing useful back. Rephrase and try again."
             parts = (candidates[0].get("content") or {}).get("parts") or []
-            text = "".join(p.get("text", "") for p in parts).strip()
-            return text or "Empty response from Gemini."
+            out = "".join(p.get("text", "") for p in parts).strip()
+            return out or "Empty answer — try asking another way."
     except Exception as e:
-        return f"Gemini request failed: {e}"
+        print(f"[ai] request exception: {type(e).__name__}: {e}")
+        return "Brain lag — try again in a second."
+
 
 
 class AI(commands.Cog):
@@ -99,10 +109,14 @@ class AI(commands.Cog):
     async def _answer(self, guild_id: int, question: str, author: str) -> str:
         knowledge = await self._knowledge_context(guild_id)
         system = (
-            "You are Evergreen MILCOM assistant for Politics & War. "
-            "Be concise and practical. Use alliance knowledge when relevant. "
-            "If unsure, say so. Never invent exact private stockpile numbers. "
-            "Never reveal secrets or API keys."
+            "You are Evergreen MILCOM — alliance military assistant for Politics & War. "
+            "Primary job: be useful (war, raids, spies, DNR, counters, coordination). "
+            "Tone: sharp, casual, alliance-family. Light trash talk is OK when members are joking — "
+            "playful only, never cruel, never real-life personal attacks. "
+            "Do not make trash talk your whole personality; default to competent MILCOM help. "
+            "Use alliance knowledge when relevant. If unsure, say so. "
+            "Never invent exact private stockpile numbers. Never reveal secrets or API keys. "
+            "Never mention which AI, model, or provider you are."
         )
         user = f"Alliance knowledge:\n{knowledge}\n\nMember {author} asks:\n{question}"
         session = self.bot.http_session
