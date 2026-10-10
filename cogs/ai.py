@@ -9,7 +9,7 @@ from discord.ext import commands
 
 from utils import database
 
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 GEMINI_URL = (
     f"https://generativelanguage.googleapis.com/v1beta/models/"
     f"{GEMINI_MODEL}:generateContent"
@@ -46,7 +46,9 @@ async def _fetch_url_text(session: aiohttp.ClientSession, url: str) -> str:
 
 
 async def gemini_generate(session, system: str, user: str) -> str:
+    import asyncio
     import json
+
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         return "AI is not configured right now. Ask gov to check the bot settings."
@@ -57,30 +59,63 @@ async def gemini_generate(session, system: str, user: str) -> str:
         "generationConfig": {"temperature": 0.55, "maxOutputTokens": 1024},
     }
     url = f"{GEMINI_URL}?key={api_key}"
-    try:
-        async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=45)) as resp:
-            raw = await resp.text()
-            try:
-                data = json.loads(raw)
-            except Exception:
-                print(f"[ai] bad JSON status={resp.status} body={raw[:400]}")
-                return "Brain lag — try again in a second."
-            if resp.status != 200:
-                err = (data.get("error") or {}).get("message") or raw[:300]
-                print(f"[ai] API error {resp.status}: {err}")
-                return "Couldn't reach the brain right now. Try again shortly."
-            candidates = data.get("candidates") or []
-            if not candidates:
-                print(f"[ai] no candidates: {raw[:400]}")
-                return "Got nothing useful back. Rephrase and try again."
-            parts = (candidates[0].get("content") or {}).get("parts") or []
-            out = "".join(p.get("text", "") for p in parts).strip()
-            return out or "Empty answer — try asking another way."
-    except Exception as e:
-        print(f"[ai] request exception: {type(e).__name__}: {e}")
-        return "Brain lag — try again in a second."
 
+    for attempt in range(2):
+        try:
+            async with session.post(
+                url, json=payload, timeout=aiohttp.ClientTimeout(total=45)
+            ) as resp:
+                raw = await resp.text()
+                try:
+                    data = json.loads(raw)
+                except Exception:
+                    print(f"[ai] bad JSON status={resp.status} body={raw[:400]}")
+                    if attempt == 0:
+                        await asyncio.sleep(1.2)
+                        continue
+                    return "Brain lag — try again in a second."
 
+                if resp.status == 429:
+                    print(f"[ai] rate limited 429: {raw[:300]}")
+                    return (
+                        "Daily/minute free AI limit hit. "
+                        "Try again later (quota resets around midnight Pacific Time)."
+                    )
+
+                if resp.status != 200:
+                    err = (data.get("error") or {}).get("message") or raw[:300]
+                    print(f"[ai] API error {resp.status}: {err}")
+                    low = (err or "").lower()
+                    if "quota" in low or "rate" in low or "limit" in low:
+                        return (
+                            "Daily/minute free AI limit hit. "
+                            "Try again later (quota resets around midnight Pacific Time)."
+                        )
+                    if attempt == 0:
+                        await asyncio.sleep(1.2)
+                        continue
+                    return "Couldn't reach the brain right now. Try again shortly."
+
+                candidates = data.get("candidates") or []
+                if not candidates:
+                    print(f"[ai] no candidates: {raw[:400]}")
+                    if attempt == 0:
+                        await asyncio.sleep(0.8)
+                        continue
+                    return "Got nothing useful back. Rephrase and try again."
+
+                parts = (candidates[0].get("content") or {}).get("parts") or []
+                result = "".join(p.get("text", "") for p in parts).strip()
+                return result or "Empty answer — try asking another way."
+
+        except Exception as e:
+            print(f"[ai] request exception: {type(e).__name__}: {e}")
+            if attempt == 0:
+                await asyncio.sleep(1.2)
+                continue
+            return "Brain lag — try again in a second."
+
+    return "Couldn't reach the brain right now. Try again shortly."
 
 
 async def _live_pw_context(bot, guild_id: int, question: str) -> str:
