@@ -280,6 +280,23 @@ class PWApiClient:
         wars = data["wars"]["data"]
         return (wars[0].get("attacks") or []) if wars else []
 
+
+    async def get_trade_prices(self) -> dict | None:
+        """Latest market averages from GraphQL tradeprices."""
+        query = """
+        {
+          tradeprices(first: 1) {
+            data {
+              date
+              food coal oil uranium iron bauxite lead gasoline munitions steel aluminum credits
+            }
+          }
+        }
+        """
+        data = await self._query(query)
+        rows = (data.get("tradeprices") or {}).get("data") or []
+        return rows[0] if rows else None
+
     async def get_nations_in_score_range(self, min_score: float, max_score: float) -> list[dict]:
         query = """
         query($min: Float, $max: Float) {

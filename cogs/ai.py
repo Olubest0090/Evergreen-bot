@@ -82,6 +82,58 @@ async def gemini_generate(session, system: str, user: str) -> str:
 
 
 
+
+async def _live_pw_context(bot, guild_id: int, question: str) -> str:
+    """Fetch live alliances/treaties/market when the question needs it."""
+    q = (question or "").lower()
+    bits = []
+    client = getattr(bot, "pw_client", None)
+    if not client:
+        return ""
+
+    wants_treaty = any(w in q for w in ("treaty", "treaties", "ally", "allies", "alliance list", "who are we allied", "bloc", "mdp", "protectorate", "nap", "odp"))
+    wants_market = any(w in q for w in ("market", "price", "prices", "trade", "cost of", "how much is", "steel", "gasoline", "munitions", "aluminum", "food price", "credits"))
+    wants_enemies = any(w in q for w in ("enemy", "enemies", "who are we fighting", "targets"))
+
+    try:
+        if wants_treaty or wants_enemies:
+            config = await database.get_alerts_config(guild_id)
+            alliance_id = config.get("alliance_id") if config else None
+            if alliance_id and wants_treaty:
+                treaties = await client.get_alliance_treaties(int(alliance_id))
+                if treaties:
+                    lines = [f"- {t.get('treaty_type')}: {t.get('other_alliance_name')} (id {t.get('other_alliance_id')})" for t in treaties]
+                    bits.append("Live treaties:\n" + "\n".join(lines))
+                else:
+                    bits.append("Live treaties: none returned.")
+            # Coalition blocs from Supabase
+            for bloc in ("ALLIES", "ENEMIES", "DNR", "EXTENSION"):
+                rows = await database.list_coalitions(guild_id, bloc)
+                if rows:
+                    names = []
+                    for r in rows[:25]:
+                        names.append(str(r.get("alliance_id")))
+                    bits.append(f"Configured {bloc} alliance IDs: {', '.join(names)}")
+
+        if wants_market:
+            prices = await client.get_trade_prices()
+            if prices:
+                bits.append(
+                    "Live market averages (latest tradeprices row):\n"
+                    + ", ".join(f"{k}={prices.get(k)}" for k in (
+                        "food", "coal", "oil", "uranium", "iron", "bauxite", "lead",
+                        "gasoline", "munitions", "steel", "aluminum", "credits",
+                    ) if prices.get(k) is not None)
+                )
+            else:
+                bits.append("Live market: no tradeprices row returned.")
+    except Exception as e:
+        print(f"[ai] live pw context failed: {e}")
+        bits.append(f"(Live P&W lookup failed: {e})")
+
+    return "\n\n".join(bits)
+
+
 class AI(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -108,17 +160,18 @@ class AI(commands.Cog):
 
     async def _answer(self, guild_id: int, question: str, author: str) -> str:
         knowledge = await self._knowledge_context(guild_id)
+        live = await _live_pw_context(self.bot, guild_id, question)
         system = (
             "You are Evergreen MILCOM — alliance military assistant for Politics & War. "
             "Primary job: be useful (war, raids, spies, DNR, counters, coordination). "
             "Tone: sharp, casual, alliance-family. Light trash talk is OK when members are joking — "
             "playful only, never cruel, never real-life personal attacks. "
             "Do not make trash talk your whole personality; default to competent MILCOM help. "
-            "Use alliance knowledge when relevant. If unsure, say so. "
+            "Use alliance knowledge when relevant. Prefer Live game data for treaties, blocs, and market prices when provided. If unsure, say so. "
             "Never invent exact private stockpile numbers. Never reveal secrets or API keys. "
             "Never mention which AI, model, or provider you are."
         )
-        user = f"Alliance knowledge:\n{knowledge}\n\nMember {author} asks:\n{question}"
+        user = f"Alliance knowledge:\n{knowledge}\n\nLive game data:\n{live or '(none requested)'}\n\nMember {author} asks:\n{question}"
         session = self.bot.http_session
         reply = await gemini_generate(session, system, user)
         if len(reply) > MAX_REPLY_CHARS:
