@@ -175,51 +175,184 @@ async def llm_generate(session, system: str, user: str) -> str:
 
 
 async def _live_pw_context(bot, guild_id: int, question: str) -> str:
-    """Fetch live alliances/treaties/market when the question needs it."""
-    q = (question or "").lower()
+    """Pull anything useful the P&W API can see for this question."""
+    import re
+
+    q = (question or "").strip()
+    ql = q.lower()
     bits = []
     client = getattr(bot, "pw_client", None)
     if not client:
         return ""
 
-    wants_treaty = any(w in q for w in ("treaty", "treaties", "ally", "allies", "alliance list", "who are we allied", "bloc", "mdp", "protectorate", "nap", "odp"))
-    wants_market = any(w in q for w in ("market", "price", "prices", "trade", "cost of", "how much is", "steel", "gasoline", "munitions", "aluminum", "food price", "credits"))
-    wants_enemies = any(w in q for w in ("enemy", "enemies", "who are we fighting", "targets"))
+    # --- detect IDs in text / links ---
+    nation_ids = set()
+    for m in re.finditer(r"nation/id[=/](\d+)", ql):
+        nation_ids.add(int(m.group(1)))
+    for m in re.finditer(r"\bnation\s*(?:id\s*)?#?(\d{2,7})\b", ql):
+        nation_ids.add(int(m.group(1)))
+    for m in re.finditer(r"\bid[=:\s]+(\d{2,7})\b", ql):
+        nation_ids.add(int(m.group(1)))
+
+    alliance_ids = set()
+    for m in re.finditer(r"alliance/id[=/](\d+)", ql):
+        alliance_ids.add(int(m.group(1)))
+    for m in re.finditer(r"\balliance\s*(?:id\s*)?#?(\d{1,6})\b", ql):
+        alliance_ids.add(int(m.group(1)))
+
+    wants_market = any(w in ql for w in (
+        "market", "price", "prices", "trade price", "avg price", "how much is",
+        "steel", "gasoline", "munitions", "aluminum", "uranium", "food price", "credits",
+    ))
+    wants_members = any(w in ql for w in (
+        "how many member", "member count", "members in", "roster", "headcount",
+        "alliance size", "members are in",
+    ))
+    wants_treaty = any(w in ql for w in (
+        "treaty", "treaties", "allied with", "allies", "mdp", "protectorate", "nap", "odp",
+    ))
+    wants_wars = any(w in ql for w in (
+        "active war", "at war", "wars against", "who is fighting", "war count",
+    ))
+    wants_top = any(w in ql for w in ("top alliance", "top aa", "rank alliance", "score ranking"))
+
+    # quoted name: "Nation Name" or 'Nation Name'
+    name_candidates = re.findall(r"[\"']([^\"']{2,40})[\"']", q)
+
+    # bare "who is X" / "look up X" / "info on X"
+    for m in re.finditer(
+        r"(?:who is|who's|lookup|look up|info on|about|nation|alliance)\s+([A-Za-z0-9][A-Za-z0-9 _'\-]{1,40})",
+        q,
+        flags=re.I,
+    ):
+        name_candidates.append(m.group(1).strip())
 
     try:
-        if wants_treaty or wants_enemies:
-            config = await database.get_alerts_config(guild_id)
-            alliance_id = config.get("alliance_id") if config else None
-            if alliance_id and wants_treaty:
-                treaties = await client.get_alliance_treaties(int(alliance_id))
-                if treaties:
-                    lines = [f"- {t.get('treaty_type')}: {t.get('other_alliance_name')} (id {t.get('other_alliance_id')})" for t in treaties]
-                    bits.append("Live treaties:\n" + "\n".join(lines))
-                else:
-                    bits.append("Live treaties: none returned.")
-            # Coalition blocs from Supabase
-            for bloc in ("ALLIES", "ENEMIES", "DNR", "EXTENSION"):
-                rows = await database.list_coalitions(guild_id, bloc)
-                if rows:
-                    names = []
-                    for r in rows[:25]:
-                        names.append(str(r.get("alliance_id")))
-                    bits.append(f"Configured {bloc} alliance IDs: {', '.join(names)}")
+        config = await database.get_alerts_config(guild_id)
+        our_aa = config.get("alliance_id") if config else None
 
+        # --- market ---
         if wants_market:
-            prices = await client.get_trade_prices()
-            if prices:
+            try:
+                prices = await client.get_trade_prices()
+                if prices:
+                    bits.append(
+                        "Live market averages: "
+                        + ", ".join(
+                            f"{k}={prices.get(k)}"
+                            for k in (
+                                "food", "coal", "oil", "uranium", "iron", "bauxite", "lead",
+                                "gasoline", "munitions", "steel", "aluminum", "credits",
+                            )
+                            if prices.get(k) is not None
+                        )
+                    )
+            except Exception as e:
+                bits.append(f"(market failed: {e})")
+
+        # --- resolve names to nation or alliance ---
+        for name in name_candidates[:5]:
+            if len(name) < 2:
+                continue
+            try:
+                nation = await client.get_nation_by_name(name)
+                if nation and nation.get("id"):
+                    nation_ids.add(int(nation["id"]))
+            except Exception:
+                pass
+            try:
+                aa = await client.get_alliance_by_id_or_name(name)
+                if aa and aa.get("id"):
+                    alliance_ids.add(int(aa["id"]))
+            except Exception:
+                pass
+
+        # default: "our / evergreen members" → our alliance
+        if wants_members and our_aa and not alliance_ids:
+            alliance_ids.add(int(our_aa))
+        if wants_treaty and our_aa and not alliance_ids:
+            alliance_ids.add(int(our_aa))
+        if wants_wars and our_aa:
+            alliance_ids.add(int(our_aa))
+
+        # --- nations ---
+        for nid in list(nation_ids)[:5]:
+            try:
+                n = await client.get_nation(nid)
+                if not n:
+                    bits.append(f"Nation id={nid}: not found")
+                    continue
+                aa = n.get("alliance") or {}
                 bits.append(
-                    "Live market averages (latest tradeprices row):\n"
-                    + ", ".join(f"{k}={prices.get(k)}" for k in (
-                        "food", "coal", "oil", "uranium", "iron", "bauxite", "lead",
-                        "gasoline", "munitions", "steel", "aluminum", "credits",
-                    ) if prices.get(k) is not None)
+                    "Live nation: "
+                    f"id={n.get('id')} name={n.get('nation_name')} leader={n.get('leader_name')} "
+                    f"score={n.get('score')} cities={n.get('num_cities') or n.get('cities')} "
+                    f"alliance={aa.get('name')} (id={n.get('alliance_id')}) "
+                    f"color={n.get('color')} soldiers={n.get('soldiers')} tanks={n.get('tanks')} "
+                    f"aircraft={n.get('aircraft')} ships={n.get('ships')} "
+                    f"missiles={n.get('missiles')} nukes={n.get('nukes')} "
+                    f"beige_turns={n.get('beige_turns')} vm={n.get('vacation_mode_turns')} "
+                    f"last_active={n.get('last_active')}"
                 )
-            else:
-                bits.append("Live market: no tradeprices row returned.")
+            except Exception as e:
+                bits.append(f"(nation {nid} failed: {e})")
+
+        # --- alliances ---
+        for aid in list(alliance_ids)[:5]:
+            try:
+                aa = await client.get_alliance_by_id_or_name(str(aid))
+                if aa:
+                    bits.append(
+                        "Live alliance: "
+                        f"id={aa.get('id')} name={aa.get('name')} score={aa.get('score')} "
+                        f"members={aa.get('num_nations') or aa.get('nation_count') or '?'} "
+                        f"rank={aa.get('rank')} color={aa.get('color')}"
+                    )
+                if wants_members or (aa and not aa.get("num_nations")):
+                    members = await client.get_alliance_members(aid)
+                    if members is not None:
+                        bits.append(f"Live alliance_id={aid} member_count={len(members)}")
+                if wants_treaty:
+                    treaties = await client.get_alliance_treaties(aid)
+                    if treaties:
+                        lines_t = [
+                            f"- {t.get('treaty_type')}: {t.get('other_alliance_name')} (id {t.get('other_alliance_id')})"
+                            for t in treaties
+                        ]
+                        bits.append(f"Live treaties for aa {aid}:\n" + "\n".join(lines_t))
+                    else:
+                        bits.append(f"Live treaties for aa {aid}: none")
+                if wants_wars and our_aa and int(aid) == int(our_aa):
+                    wars = await client.get_active_wars(int(our_aa))
+                    bits.append(f"Live active wars involving our AA: {len(wars or [])}")
+            except Exception as e:
+                bits.append(f"(alliance {aid} failed: {e})")
+
+        # --- top alliances ---
+        if wants_top:
+            try:
+                top = await client.get_top_alliances(10)
+                if top:
+                    lines_top = [
+                        f"{i+1}. {a.get('name')} (id={a.get('id')}) score={a.get('score')}"
+                        for i, a in enumerate(top)
+                    ]
+                    bits.append("Live top alliances:\n" + "\n".join(lines_top))
+            except Exception as e:
+                bits.append(f"(top alliances failed: {e})")
+
+        # --- our configured blocs (always small, useful) ---
+        if any(w in ql for w in ("dnr", "enemies", "allies", "bloc", "coalition")):
+            for bloc in ("ALLIES", "ENEMIES", "DNR", "EXTENSION", "DNR_MEMBERS"):
+                try:
+                    rows = await database.list_coalitions(guild_id, bloc)
+                    if rows:
+                        ids = [str(r.get("alliance_id")) for r in rows[:40] if r.get("alliance_id") is not None]
+                        bits.append(f"Configured {bloc}: {', '.join(ids)}")
+                except Exception:
+                    pass
+
     except Exception as e:
-        print(f"[ai] live pw context failed: {e}")
         bits.append(f"(Live P&W lookup failed: {e})")
 
     return "\n\n".join(bits)
@@ -258,14 +391,12 @@ class AI(commands.Cog):
         knowledge = await self._knowledge_context(guild_id)
         live = await _live_pw_context(self.bot, guild_id, question)
         system = (
-            "You are Evergreen MILCOM — alliance military assistant for Politics & War. "
-            "Primary job: be useful (war, raids, spies, DNR, counters, coordination). "
-            "Tone: sharp, casual, alliance-family. Light trash talk is OK when members are joking — "
-            "playful only, never cruel, never real-life personal attacks. "
-            "Do not make trash talk your whole personality; default to competent MILCOM help. "
-            "Use alliance knowledge when relevant. Prefer Live game data for treaties, blocs, and market prices when provided. If unsure, say so. "
-            "Never invent exact private stockpile numbers. Never reveal secrets or API keys. "
-            "Never mention which AI, model, or provider you are."
+            "You are Evergreen MILCOM in Discord — talk like a real alliance member, not a helpdesk bot. "
+            "Short, casual, direct. Light banter OK. "
+            "When Live game data is provided, treat it as ground truth and answer with those numbers. "
+            "You can discuss any nation or alliance in Politics & War using live data — not only Evergreen. "
+            "If live data is missing, say so briefly; do not invent stats. "
+            "Never mention AI, models, or providers. Never reveal secrets or API keys."
         )
         user = f"Alliance knowledge:\n{knowledge}\n\nLive game data:\n{live or '(none requested)'}\n\nMember {author} asks:\n{question}"
         session = self.bot.http_session
