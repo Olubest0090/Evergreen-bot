@@ -556,7 +556,6 @@ class AI(commands.Cog):
 
             net = damage_value - op_cost - spy_loss_cost
             lines.append(f"\n**Net value:** {format_money(net)}")
-            lines.append("_Net = build value destroyed − op cost − your lost spies._")
 
         body = "\n".join(lines)
         if len(body) > 1900:
