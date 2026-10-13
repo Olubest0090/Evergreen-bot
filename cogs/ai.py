@@ -9,6 +9,7 @@ import discord
 from discord.ext import commands
 
 from utils import database
+from utils.spy_parse import parse_spy_message, format_money, value_resources
 
 log = logging.getLogger("evergreen-ai")
 
@@ -415,7 +416,8 @@ class AI(commands.Cog):
             return
 
         if SPY_CHANNEL_ID and message.channel.id == SPY_CHANNEL_ID:
-            return  # Phase 2
+            await self._handle_spy_desk(message)
+            return
 
         is_mention = self.bot.user and self.bot.user in message.mentions
         is_reply_to_bot = False
@@ -475,6 +477,63 @@ class AI(commands.Cog):
                 await message.add_reaction("⚠️")
             except discord.HTTPException:
                 pass
+
+
+
+    async def _handle_spy_desk(self, message: discord.Message):
+        report = parse_spy_message(message.content or "")
+        if not report:
+            return
+
+        prices = None
+        try:
+            prices = await self.bot.pw_client.get_trade_prices()
+        except Exception as e:
+            log.warning("[spy] trade prices failed: %s", e)
+
+        lines = []
+        title_target = report.target or "Target"
+
+        if report.kind == "intel":
+            lines.append(f"**Spy intel — {title_target}**")
+            if report.resources:
+                for k in (
+                    "money", "food", "coal", "oil", "uranium", "lead", "iron", "bauxite",
+                    "gasoline", "munitions", "steel", "aluminum", "credits",
+                ):
+                    if k in report.resources and report.resources[k]:
+                        amt = report.resources[k]
+                        if k == "money":
+                            lines.append(f"• Money: {format_money(amt)}")
+                        else:
+                            lines.append(f"• {k.title()}: {amt:,.2f}")
+                total = value_resources(report.resources, prices)
+                lines.append(f"\n**Est. stockpile value:** {format_money(total)}")
+                lines.append("_Value uses live market averages when available. Loot taken in war is a fraction of this._")
+            else:
+                lines.append("Could not parse resources from that report.")
+        else:
+            lines.append(f"**Spy op — {title_target}** ({report.kind})")
+            if report.spies_killed is not None:
+                lines.append(f"• Enemy spies killed: **{report.spies_killed}**")
+            if report.spies_lost is not None:
+                lines.append(f"• Your spies lost: **{report.spies_lost}**")
+
+        if report.op_cost_money is not None:
+            lines.append(f"• Op cost: {format_money(report.op_cost_money)}")
+            if report.kind == "intel" and report.resources:
+                total = value_resources(report.resources, prices)
+                if report.op_cost_money > 0:
+                    lines.append(f"• Value / cost ratio: **{total / report.op_cost_money:.1f}x**")
+
+        body = "\n".join(lines)
+        if len(body) > 1900:
+            body = body[:1900] + "\n…"
+        try:
+            await message.reply(body, mention_author=False)
+        except discord.HTTPException as e:
+            log.warning("[spy] reply failed: %s", e)
+
 
 
 async def setup(bot: commands.Bot):
