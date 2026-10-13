@@ -1,6 +1,7 @@
 """Evergreen AI (Gemini) — knowledge channel + @mention / reply-to-bot."""
 
 import os
+import logging
 import re
 
 import aiohttp
@@ -8,6 +9,8 @@ import discord
 from discord.ext import commands
 
 from utils import database
+
+log = logging.getLogger("evergreen-ai")
 
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 GEMINI_URL = (
@@ -17,6 +20,10 @@ GEMINI_URL = (
 
 KNOWLEDGE_CHANNEL_ID = int(os.environ.get("AI_KNOWLEDGE_CHANNEL_ID", "0") or 0)
 SPY_CHANNEL_ID = int(os.environ.get("AI_SPY_CHANNEL_ID", "0") or 0)
+
+AI_PROVIDER = os.environ.get("AI_PROVIDER", "groq").lower()
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
 MAX_KNOWLEDGE_CHARS = 12_000
 MAX_REPLY_CHARS = 1900
 
@@ -45,21 +52,83 @@ async def _fetch_url_text(session: aiohttp.ClientSession, url: str) -> str:
         return f"[Fetch failed for {url}: {e}]"
 
 
-async def gemini_generate(session, system: str, user: str) -> str:
+async def llm_generate(session, system: str, user: str) -> str:
+    """Call Groq (default) or Gemini based on AI_PROVIDER."""
     import asyncio
     import json
 
+    provider = os.environ.get("AI_PROVIDER", "groq").lower()
+
+    if provider == "groq":
+        api_key = os.environ.get("GROQ_API_KEY")
+        if not api_key:
+            return "AI is not configured (missing GROQ_API_KEY on Render)."
+        model = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0.55,
+            "max_tokens": 1024,
+        }
+        for attempt in range(2):
+            try:
+                async with session.post(
+                    url, json=payload, headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=45),
+                ) as resp:
+                    raw = await resp.text()
+                    try:
+                        data = json.loads(raw)
+                    except Exception:
+                        log.warning("[ai] groq bad JSON %s: %s", resp.status, raw[:300])
+                        if attempt == 0:
+                            await asyncio.sleep(1.0)
+                            continue
+                        return "Brain lag — try again in a second."
+                    if resp.status == 429:
+                        log.warning("[ai] groq 429: %s", raw[:300])
+                        return (
+                            "Free AI limit hit for now. "
+                            "Try again in a minute (or later if daily quota is used)."
+                        )
+                    if resp.status != 200:
+                        err = (data.get("error") or {}).get("message") or raw[:300]
+                        log.warning("[ai] groq error %s: %s", resp.status, err)
+                        if attempt == 0:
+                            await asyncio.sleep(1.0)
+                            continue
+                        return "Couldn't reach the brain right now. Try again shortly."
+                    choices = data.get("choices") or []
+                    if not choices:
+                        return "Got nothing useful back. Rephrase and try again."
+                    out = ((choices[0].get("message") or {}).get("content") or "").strip()
+                    return out or "Empty answer — try asking another way."
+            except Exception as e:
+                log.warning("[ai] groq exception: %s: %s", type(e).__name__, e)
+                if attempt == 0:
+                    await asyncio.sleep(1.0)
+                    continue
+                return "Brain lag — try again in a second."
+        return "Couldn't reach the brain right now. Try again shortly."
+
+    # Gemini fallback
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         return "AI is not configured right now. Ask gov to check the bot settings."
-
     payload = {
         "system_instruction": {"parts": [{"text": system}]},
         "contents": [{"role": "user", "parts": [{"text": user}]}],
         "generationConfig": {"temperature": 0.55, "maxOutputTokens": 1024},
     }
     url = f"{GEMINI_URL}?key={api_key}"
-
     for attempt in range(2):
         try:
             async with session.post(
@@ -69,52 +138,39 @@ async def gemini_generate(session, system: str, user: str) -> str:
                 try:
                     data = json.loads(raw)
                 except Exception:
-                    print(f"[ai] bad JSON status={resp.status} body={raw[:400]}")
+                    log.warning("[ai] gemini bad JSON %s: %s", resp.status, raw[:300])
                     if attempt == 0:
                         await asyncio.sleep(1.2)
                         continue
                     return "Brain lag — try again in a second."
-
                 if resp.status == 429:
-                    print(f"[ai] rate limited 429: {raw[:300]}")
+                    log.warning("[ai] gemini 429: %s", raw[:300])
                     return (
                         "Daily/minute free AI limit hit. "
                         "Try again later (quota resets around midnight Pacific Time)."
                     )
-
                 if resp.status != 200:
                     err = (data.get("error") or {}).get("message") or raw[:300]
-                    print(f"[ai] API error {resp.status}: {err}")
-                    low = (err or "").lower()
-                    if "quota" in low or "rate" in low or "limit" in low:
-                        return (
-                            "Daily/minute free AI limit hit. "
-                            "Try again later (quota resets around midnight Pacific Time)."
-                        )
+                    log.warning("[ai] gemini error %s: %s", resp.status, err)
                     if attempt == 0:
                         await asyncio.sleep(1.2)
                         continue
                     return "Couldn't reach the brain right now. Try again shortly."
-
                 candidates = data.get("candidates") or []
                 if not candidates:
-                    print(f"[ai] no candidates: {raw[:400]}")
                     if attempt == 0:
                         await asyncio.sleep(0.8)
                         continue
                     return "Got nothing useful back. Rephrase and try again."
-
                 parts = (candidates[0].get("content") or {}).get("parts") or []
-                result = "".join(p.get("text", "") for p in parts).strip()
-                return result or "Empty answer — try asking another way."
-
+                out = "".join(p.get("text", "") for p in parts).strip()
+                return out or "Empty answer — try asking another way."
         except Exception as e:
-            print(f"[ai] request exception: {type(e).__name__}: {e}")
+            log.warning("[ai] gemini exception: %s: %s", type(e).__name__, e)
             if attempt == 0:
                 await asyncio.sleep(1.2)
                 continue
             return "Brain lag — try again in a second."
-
     return "Couldn't reach the brain right now. Try again shortly."
 
 
@@ -172,6 +228,11 @@ async def _live_pw_context(bot, guild_id: int, question: str) -> str:
 class AI(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        log.warning(
+            "[ai] AI cog loaded provider=%s groq_model=%s",
+            os.environ.get("AI_PROVIDER", "groq"),
+            os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant"),
+        )
 
     async def _knowledge_context(self, guild_id: int) -> str:
         try:
@@ -208,7 +269,7 @@ class AI(commands.Cog):
         )
         user = f"Alliance knowledge:\n{knowledge}\n\nLive game data:\n{live or '(none requested)'}\n\nMember {author} asks:\n{question}"
         session = self.bot.http_session
-        reply = await gemini_generate(session, system, user)
+        reply = await llm_generate(session, system, user)
         if len(reply) > MAX_REPLY_CHARS:
             reply = reply[: MAX_REPLY_CHARS - 20] + "\n…(truncated)"
         return reply
