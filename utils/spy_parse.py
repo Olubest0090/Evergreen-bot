@@ -1,4 +1,3 @@
-
 """Parse Politics & War espionage result messages."""
 
 from __future__ import annotations
@@ -6,15 +5,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-
-RESOURCES = (
-    "money", "coal", "oil", "uranium", "lead", "iron", "bauxite",
-    "gasoline", "munitions", "steel", "aluminum", "food", "credits",
-)
-
-# map display words -> key
 RES_ALIASES = {
-    "money": "money", "$": "money", "cash": "money",
+    "money": "money", "cash": "money",
     "coal": "coal", "oil": "oil", "uranium": "uranium",
     "lead": "lead", "iron": "iron", "bauxite": "bauxite",
     "gasoline": "gasoline", "munitions": "munitions",
@@ -22,24 +14,36 @@ RES_ALIASES = {
     "food": "food", "credits": "credits", "credit": "credits",
 }
 
+# Build cost: money + resources (post-2025 where known)
+UNIT_BUILD_COST = {
+    "nuke": {"money": 1_750_000, "aluminum": 1000, "gasoline": 500, "uranium": 500},
+    "missile": {"money": 150_000, "aluminum": 150, "gasoline": 100, "munitions": 100},
+    "spy": {"money": 50_000},
+    "tank": {"money": 60, "steel": 0.5, "gasoline": 0.75},  # approx per tank; refine if needed
+    "aircraft": {"money": 4000, "aluminum": 10, "gasoline": 1.25},
+    "ship": {"money": 50000, "steel": 20, "gasoline": 2.75},
+    "soldier": {"money": 5},
+}
+
+SPY_RECRUIT_COST = 50_000
+
 
 def _num(s: str) -> float:
-    s = s.strip().replace(",", "")
     try:
-        return float(s)
+        return float(s.strip().replace(",", ""))
     except ValueError:
         return 0.0
 
 
 @dataclass
 class SpyReport:
-    kind: str  # intel | spykill | other | unknown
+    kind: str  # intel | sabotage | spykill | other
     target: str | None = None
     resources: dict[str, float] = field(default_factory=dict)
     op_cost_money: float | None = None
     spies_lost: int | None = None
     spies_killed: int | None = None
-    raw_note: str = ""
+    destroyed: dict[str, int] = field(default_factory=dict)  # unit -> count
 
 
 def parse_spy_message(text: str) -> SpyReport | None:
@@ -48,78 +52,74 @@ def parse_spy_message(text: str) -> SpyReport | None:
     t = text.replace("\xa0", " ")
     low = t.lower()
 
-    # Must look like a P&W spy result
     markers = (
-        "your spies discovered",
-        "you successfully gathered intelligence",
-        "your agents were able to operate",
-        "spies were captured",
-        "the operation cost you",
-        "assassinate",
-        "destroy spies",
-        "terrorize",
-        "sabotage",
+        "your spies discovered", "gathered intelligence", "your agents were able",
+        "spies were captured", "the operation cost you", "assassinate",
+        "destroy", "sabotage", "detonated", "terrorize", "nuclear weapon",
+        "missile",
     )
     if not any(m in low for m in markers):
         return None
 
-    report = SpyReport(kind="unknown")
+    report = SpyReport(kind="other")
 
-    # Target name
+    # Target: "about X" / "in X" / "against X"
     m = re.search(
-        r"(?:gathered intelligence about|intelligence about|discovered that)\s+([A-Za-z0-9][A-Za-z0-9 _'\-]{1,40})",
+        r"(?:gathered intelligence about|intelligence about|discovered that|in|against)\s+([A-Za-z0-9][A-Za-z0-9 _'\-]{1,40}?)(?:\.|,| Your |$)",
         t,
         flags=re.I,
     )
     if m:
         report.target = m.group(1).strip().rstrip(".")
 
-    # Intel resource block: "$14,467,712.54, 468.00 coal, ..."
     if "discovered that" in low or "gathered intelligence" in low:
         report.kind = "intel"
-        # money first
         m_money = re.search(r"has\s+\$([0-9,]+\.?[0-9]*)", t, flags=re.I)
         if m_money:
             report.resources["money"] = _num(m_money.group(1))
-        # "468.00 coal" style
         for m in re.finditer(
             r"([0-9,]+\.?[0-9]*)\s+(coal|oil|uranium|lead|iron|bauxite|gasoline|munitions|steel|aluminum|aluminium|food|credits?)",
             t,
             flags=re.I,
         ):
-            key = RES_ALIASES.get(m.group(2).lower().rstrip("s") if m.group(2).lower().endswith("credits") else m.group(2).lower())
-            if not key:
-                key = RES_ALIASES.get(m.group(2).lower())
+            raw = m.group(2).lower()
+            key = "credits" if raw.startswith("credit") else RES_ALIASES.get(raw)
             if key:
                 report.resources[key] = _num(m.group(1))
-            # fix credits plural
-            raw = m.group(2).lower()
-            if raw.startswith("credit"):
-                report.resources["credits"] = _num(m.group(1))
 
-    # Op cost
+    # Destroyed units
+    for label, key in (
+        (r"(\d+)\s+nuclear weapons?", "nuke"),
+        (r"(\d+)\s+nukes?", "nuke"),
+        (r"destroyed\s+(\d+)\s+nuclear weapon", "nuke"),
+        (r"(\d+)\s+missiles?", "missile"),
+        (r"(\d+)\s+tanks?", "tank"),
+        (r"(\d+)\s+aircraft", "aircraft"),
+        (r"(\d+)\s+planes?", "aircraft"),
+        (r"(\d+)\s+ships?", "ship"),
+        (r"(\d+)\s+soldiers?", "soldier"),
+    ):
+        m = re.search(label, t, flags=re.I)
+        if m:
+            report.destroyed[key] = report.destroyed.get(key, 0) + int(m.group(1))
+            report.kind = "sabotage"
+
+    if "assassinate" in low or re.search(r"killed\s+\d+\s+(?:enemy\s+)?spies", low):
+        report.kind = "spykill"
+        m = re.search(r"(?:killed|eliminated|destroyed)\s+(\d+)\s+(?:enemy\s+)?spies", t, flags=re.I)
+        if m:
+            report.spies_killed = int(m.group(1))
+            report.destroyed["spy"] = report.destroyed.get("spy", 0) + int(m.group(1))
+
     m = re.search(r"operation cost you\s+\$([0-9,]+\.?[0-9]*)", t, flags=re.I)
     if m:
         report.op_cost_money = _num(m.group(1))
 
-    # Spies lost / killed
     m = re.search(r"(\d+)\s+of your spies were captured", t, flags=re.I)
     if m:
         report.spies_lost = int(m.group(1))
-    m = re.search(r"(?:killed|eliminated|destroyed)\s+(\d+)\s+(?:enemy\s+)?spies", t, flags=re.I)
-    if m:
-        report.spies_killed = int(m.group(1))
-        if report.kind == "unknown":
-            report.kind = "spykill"
 
-    if "destroy spies" in low or "assassinate" in low:
-        if report.kind == "unknown":
-            report.kind = "spykill"
-
-    if report.kind == "unknown" and (report.op_cost_money is not None or report.resources):
-        report.kind = "other"
-
-    if report.kind == "unknown" and report.op_cost_money is None and not report.resources:
+    if report.kind == "other" and not report.destroyed and not report.resources and report.op_cost_money is None:
         return None
     return report
 
@@ -133,14 +133,12 @@ def format_money(v: float) -> str:
 
 
 def value_resources(resources: dict[str, float], prices: dict | None) -> float:
-    """Rough market value. Money counts as 1:1. Missing prices → 0 for that res."""
     total = float(resources.get("money") or 0)
     if not prices:
         return total
     for k, amt in resources.items():
         if k == "money" or not amt:
             continue
-        # tradeprices keys match resource names
         p = prices.get(k)
         if p is None:
             continue
@@ -148,4 +146,20 @@ def value_resources(resources: dict[str, float], prices: dict | None) -> float:
             total += float(amt) * float(p)
         except (TypeError, ValueError):
             pass
+    return total
+
+
+def unit_production_value(unit: str, count: int, prices: dict | None) -> float:
+    cost = UNIT_BUILD_COST.get(unit)
+    if not cost or count <= 0:
+        return 0.0
+    total = 0.0
+    for k, amt in cost.items():
+        if k == "money":
+            total += float(amt) * count
+        else:
+            p = (prices or {}).get(k)
+            if p is not None:
+                total += float(amt) * count * float(p)
+            # if no price, still count money part only
     return total

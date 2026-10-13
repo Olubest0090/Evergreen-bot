@@ -9,7 +9,7 @@ import discord
 from discord.ext import commands
 
 from utils import database
-from utils.spy_parse import parse_spy_message, format_money, value_resources
+from utils.spy_parse import parse_spy_message, format_money, value_resources, unit_production_value, SPY_RECRUIT_COST
 
 log = logging.getLogger("evergreen-ai")
 
@@ -481,6 +481,7 @@ class AI(commands.Cog):
 
 
 
+
     async def _handle_spy_desk(self, message: discord.Message):
         report = parse_spy_message(message.content or "")
         if not report:
@@ -512,24 +513,50 @@ class AI(commands.Cog):
                 loot_est = total * 0.14
                 lines.append(f"\n**Worth:** {format_money(total)}")
                 lines.append(f"**You would loot:** {format_money(loot_est)}")
-                lines.append("_\~14% of stockpile value. Live market averages when available._")
             else:
                 lines.append("Could not parse resources from that report.")
-        else:
-            lines.append(f"**Spy op — {title_target}** ({report.kind})")
-            if report.spies_killed is not None:
-                lines.append(f"• Enemy spies killed: **{report.spies_killed}**")
-            if report.spies_lost is not None:
-                lines.append(f"• Your spies lost: **{report.spies_lost}**")
 
-        if report.op_cost_money is not None:
-            lines.append(f"• Op cost: {format_money(report.op_cost_money)}")
-            if report.kind == "intel" and report.resources:
-                total = value_resources(report.resources, prices)
-                if report.op_cost_money > 0:
-                    lines.append(
-                        f"• Value / cost ratio: **{total / report.op_cost_money:.1f}x**"
-                    )
+            if report.op_cost_money is not None:
+                lines.append(f"• Op cost: {format_money(report.op_cost_money)}")
+                if report.resources and report.op_cost_money > 0:
+                    total = value_resources(report.resources, prices)
+                    lines.append(f"• Value / cost: **{total / report.op_cost_money:.1f}x**")
+
+        else:
+            # sabotage / spykill / other ops
+            kind_label = {
+                "sabotage": "Sabotage",
+                "spykill": "Spy kill",
+                "other": "Spy op",
+            }.get(report.kind, "Spy op")
+            lines.append(f"**{kind_label} — {title_target}**")
+
+            damage_value = 0.0
+            if report.destroyed:
+                for unit, count in report.destroyed.items():
+                    val = unit_production_value(unit, count, prices)
+                    damage_value += val
+                    lines.append(f"• Destroyed {count}× {unit}: \~{format_money(val)} build value")
+            if report.spies_killed and "spy" not in report.destroyed:
+                val = unit_production_value("spy", report.spies_killed, prices)
+                damage_value += val
+                lines.append(f"• Enemy spies killed: {report.spies_killed} (\~{format_money(val)})")
+
+            op_cost = float(report.op_cost_money or 0)
+            if report.op_cost_money is not None:
+                lines.append(f"• Op cost: {format_money(op_cost)}")
+
+            spy_loss_cost = 0.0
+            if report.spies_lost:
+                spy_loss_cost = report.spies_lost * SPY_RECRUIT_COST
+                lines.append(
+                    f"• Your spies lost: {report.spies_lost} "
+                    f"(\~{format_money(spy_loss_cost)} recruit cost)"
+                )
+
+            net = damage_value - op_cost - spy_loss_cost
+            lines.append(f"\n**Net value:** {format_money(net)}")
+            lines.append("_Net = build value destroyed − op cost − your lost spies._")
 
         body = "\n".join(lines)
         if len(body) > 1900:
