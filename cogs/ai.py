@@ -509,7 +509,12 @@ class AI(commands.Cog):
                             lines.append(f"• {k.title()}: {amt:,.2f}")
                 total = value_resources(report.resources, prices)
                 lines.append(f"\n**Est. stockpile value:** {format_money(total)}")
-                lines.append("_Value uses live market averages when available. Loot taken in war is a fraction of this._")
+                total = value_resources(report.resources, prices)
+                loot_est = total * 0.14
+                lines.append(f"
+**Worth:** {format_money(total)}")
+                lines.append(f"**You would loot:** {format_money(loot_est)}")
+                lines.append("_\~14% of stockpile value. Live market averages when available._")
             else:
                 lines.append("Could not parse resources from that report.")
         else:
