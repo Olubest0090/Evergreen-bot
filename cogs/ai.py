@@ -480,6 +480,7 @@ class AI(commands.Cog):
 
 
 
+
     async def _handle_spy_desk(self, message: discord.Message):
         report = parse_spy_message(message.content or "")
         if not report:
@@ -509,8 +510,7 @@ class AI(commands.Cog):
                             lines.append(f"• {k.title()}: {amt:,.2f}")
                 total = value_resources(report.resources, prices)
                 loot_est = total * 0.14
-                lines.append(f"
-**Worth:** {format_money(total)}")
+                lines.append(f"\n**Worth:** {format_money(total)}")
                 lines.append(f"**You would loot:** {format_money(loot_est)}")
                 lines.append("_\~14% of stockpile value. Live market averages when available._")
             else:
@@ -527,11 +527,13 @@ class AI(commands.Cog):
             if report.kind == "intel" and report.resources:
                 total = value_resources(report.resources, prices)
                 if report.op_cost_money > 0:
-                    lines.append(f"• Value / cost ratio: **{total / report.op_cost_money:.1f}x**")
+                    lines.append(
+                        f"• Value / cost ratio: **{total / report.op_cost_money:.1f}x**"
+                    )
 
         body = "\n".join(lines)
         if len(body) > 1900:
-            body = body[:1900] + "\n…"
+            body = body[:1900] + "\n..."
         try:
             await message.reply(body, mention_author=False)
         except discord.HTTPException as e:
