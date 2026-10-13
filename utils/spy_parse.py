@@ -87,21 +87,28 @@ def parse_spy_message(text: str) -> SpyReport | None:
             if key:
                 report.resources[key] = _num(m.group(1))
 
-    # Destroyed units
-    for label, key in (
+    # Destroyed units (one match per unit type — avoid double count)
+    unit_patterns = [
+        (r"destroyed\s+(\d+)\s+nuclear weapons?", "nuke"),
         (r"(\d+)\s+nuclear weapons?", "nuke"),
         (r"(\d+)\s+nukes?", "nuke"),
-        (r"destroyed\s+(\d+)\s+nuclear weapon", "nuke"),
+        (r"destroyed\s+(\d+)\s+missiles?", "missile"),
         (r"(\d+)\s+missiles?", "missile"),
+        (r"destroyed\s+(\d+)\s+tanks?", "tank"),
         (r"(\d+)\s+tanks?", "tank"),
+        (r"destroyed\s+(\d+)\s+aircraft", "aircraft"),
         (r"(\d+)\s+aircraft", "aircraft"),
         (r"(\d+)\s+planes?", "aircraft"),
+        (r"destroyed\s+(\d+)\s+ships?", "ship"),
         (r"(\d+)\s+ships?", "ship"),
         (r"(\d+)\s+soldiers?", "soldier"),
-    ):
+    ]
+    for label, key in unit_patterns:
+        if key in report.destroyed:
+            continue
         m = re.search(label, t, flags=re.I)
         if m:
-            report.destroyed[key] = report.destroyed.get(key, 0) + int(m.group(1))
+            report.destroyed[key] = int(m.group(1))
             report.kind = "sabotage"
 
     if "assassinate" in low or re.search(r"killed\s+\d+\s+(?:enemy\s+)?spies", low):
