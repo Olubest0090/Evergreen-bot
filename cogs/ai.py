@@ -508,8 +508,6 @@ class AI(commands.Cog):
                         else:
                             lines.append(f"• {k.title()}: {amt:,.2f}")
                 total = value_resources(report.resources, prices)
-                lines.append(f"\n**Est. stockpile value:** {format_money(total)}")
-                total = value_resources(report.resources, prices)
                 loot_est = total * 0.14
                 lines.append(f"
 **Worth:** {format_money(total)}")
