@@ -78,9 +78,9 @@ def parse_spy_message(text: str) -> SpyReport | None:
     if "discovered that" in low or "gathered intelligence" in low:
         report.kind = "intel"
         # money first
-        m$ = re.search(r"has\s+\$([0-9,]+\.?[0-9]*)", t, flags=re.I)
-        if m$:
-            report.resources["money"] = _num(m$.group(1))
+        m_money = re.search(r"has\s+\$([0-9,]+\.?[0-9]*)", t, flags=re.I)
+        if m_money:
+            report.resources["money"] = _num(m_money.group(1))
         # "468.00 coal" style
         for m in re.finditer(
             r"([0-9,]+\.?[0-9]*)\s+(coal|oil|uranium|lead|iron|bauxite|gasoline|munitions|steel|aluminum|aluminium|food|credits?)",
