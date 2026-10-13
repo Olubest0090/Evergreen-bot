@@ -43,6 +43,8 @@ INITIAL_COGS = (
     "cogs.counter",
     "cogs.raid",
     "cogs.ai",
+    "cogs.waradvisor",
+    "cogs.simulate",
 )
 
 
