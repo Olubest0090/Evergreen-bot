@@ -89,17 +89,17 @@ def parse_spy_message(text: str) -> SpyReport | None:
 
     # Destroyed units (one match per unit type — avoid double count)
     unit_patterns = [
-        (r"destroyed\s+(\d+)\s+nuclear weapons?", "nuke"),
+        (r"destroyed\s+([0-9,]+)\s+nuclear weapons?", "nuke"),
         (r"(\d+)\s+nuclear weapons?", "nuke"),
         (r"(\d+)\s+nukes?", "nuke"),
-        (r"destroyed\s+(\d+)\s+missiles?", "missile"),
+        (r"destroyed\s+([0-9,]+)\s+missiles?", "missile"),
         (r"(\d+)\s+missiles?", "missile"),
-        (r"destroyed\s+(\d+)\s+tanks?", "tank"),
-        (r"(\d+)\s+tanks?", "tank"),
-        (r"destroyed\s+(\d+)\s+aircraft", "aircraft"),
+        (r"destroyed\s+([0-9,]+)\s+tanks?", "tank"),
+        (r"([0-9,]+)\s+tanks?", "tank"),
+        (r"destroyed\s+([0-9,]+)\s+aircraft", "aircraft"),
         (r"(\d+)\s+aircraft", "aircraft"),
         (r"(\d+)\s+planes?", "aircraft"),
-        (r"destroyed\s+(\d+)\s+ships?", "ship"),
+        (r"destroyed\s+([0-9,]+)\s+ships?", "ship"),
         (r"(\d+)\s+ships?", "ship"),
         (r"(\d+)\s+soldiers?", "soldier"),
     ]
@@ -108,7 +108,7 @@ def parse_spy_message(text: str) -> SpyReport | None:
             continue
         m = re.search(label, t, flags=re.I)
         if m:
-            report.destroyed[key] = int(m.group(1))
+            report.destroyed[key] = int(m.group(1).replace(",", ""))
             report.kind = "sabotage"
 
     if "assassinate" in low or re.search(r"killed\s+\d+\s+(?:enemy\s+)?spies", low):
@@ -116,7 +116,7 @@ def parse_spy_message(text: str) -> SpyReport | None:
         m = re.search(r"(?:killed|eliminated|destroyed)\s+(\d+)\s+(?:enemy\s+)?spies", t, flags=re.I)
         if m:
             report.spies_killed = int(m.group(1))
-            report.destroyed["spy"] = report.destroyed.get("spy", 0) + int(m.group(1))
+            report.destroyed["spy"] = report.destroyed.get("spy", 0) + int(m.group(1).replace(",", ""))
 
     m = re.search(r"operation cost you\s+\$([0-9,]+\.?[0-9]*)", t, flags=re.I)
     if m:

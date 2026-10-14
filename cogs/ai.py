@@ -586,21 +586,32 @@ async def _war_room_tactical_context(bot, channel_id: int, author_id: int) -> st
             await self._ingest_knowledge(message)
             return
 
-        if SPY_CHANNEL_ID and message.channel.id == SPY_CHANNEL_ID:
-            await self._handle_spy_desk(message)
-            return
-
-        is_mention = self.bot.user and self.bot.user in message.mentions
+        content_raw = message.content or ""
+        is_mention = False
+        if self.bot.user:
+            is_mention = (
+                self.bot.user in message.mentions
+                or f"<@{self.bot.user.id}>" in content_raw
+                or f"<@!{self.bot.user.id}>" in content_raw
+            )
         is_reply_to_bot = False
         if message.reference and message.reference.resolved:
             ref = message.reference.resolved
-            if isinstance(ref, discord.Message) and ref.author.id == self.bot.user.id:
+            if isinstance(ref, discord.Message) and self.bot.user and ref.author.id == self.bot.user.id:
                 is_reply_to_bot = True
+
+        # Spy channel: parse ops, but still answer @mentions / replies
+        if SPY_CHANNEL_ID and message.channel.id == SPY_CHANNEL_ID:
+            if is_mention or is_reply_to_bot:
+                pass  # fall through to AI reply below
+            else:
+                await self._handle_spy_desk(message)
+                return
 
         if not (is_mention or is_reply_to_bot):
             return
 
-        content = message.content or ""
+        content = content_raw
         if self.bot.user:
             content = (
                 content.replace(f"<@{self.bot.user.id}>", "")
@@ -610,9 +621,9 @@ async def _war_room_tactical_context(bot, channel_id: int, author_id: int) -> st
         if not content:
             content = "Help me with this."
 
+        import asyncio
         async with message.channel.typing():
             try:
-                import asyncio
                 answer = await asyncio.wait_for(
                     self._answer(
                         message.guild.id,
@@ -624,18 +635,19 @@ async def _war_room_tactical_context(bot, channel_id: int, author_id: int) -> st
                     timeout=45,
                 )
             except asyncio.TimeoutError:
-                answer = "API is slow right now — try /waradvice or ping me again in a minute."
+                answer = "API is slow right now — try again in a minute."
             except Exception as e:
                 log.exception("AI reply failed")
                 err = str(e)
                 if "rate limit" in err.lower():
                     answer = "PnW API rate limit — wait \~30s then ask again."
                 else:
-                    answer = "Couldn't answer just now. Try /waradvice or ping again."
+                    answer = "Couldn't answer just now — try again."
         try:
             await message.reply(answer, mention_author=False)
-        except discord.HTTPException:
-            pass
+        except discord.HTTPException as e:
+            log.warning("AI reply send failed: %s", e)
+
 
     async def _ingest_knowledge(self, message: discord.Message):
         session = self.bot.http_session
