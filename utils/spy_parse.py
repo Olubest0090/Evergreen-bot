@@ -90,18 +90,18 @@ def parse_spy_message(text: str) -> SpyReport | None:
     # Destroyed units (one match per unit type — avoid double count)
     unit_patterns = [
         (r"destroyed\s+([0-9,]+)\s+nuclear weapons?", "nuke"),
-        (r"(\d+)\s+nuclear weapons?", "nuke"),
-        (r"(\d+)\s+nukes?", "nuke"),
+        (r"([0-9,]+)\s+nuclear weapons?", "nuke"),
+        (r"([0-9,]+)\s+nukes?", "nuke"),
         (r"destroyed\s+([0-9,]+)\s+missiles?", "missile"),
-        (r"(\d+)\s+missiles?", "missile"),
+        (r"([0-9,]+)\s+missiles?", "missile"),
         (r"destroyed\s+([0-9,]+)\s+tanks?", "tank"),
         (r"([0-9,]+)\s+tanks?", "tank"),
         (r"destroyed\s+([0-9,]+)\s+aircraft", "aircraft"),
-        (r"(\d+)\s+aircraft", "aircraft"),
-        (r"(\d+)\s+planes?", "aircraft"),
+        (r"([0-9,]+)\s+aircraft", "aircraft"),
+        (r"([0-9,]+)\s+planes?", "aircraft"),
         (r"destroyed\s+([0-9,]+)\s+ships?", "ship"),
-        (r"(\d+)\s+ships?", "ship"),
-        (r"(\d+)\s+soldiers?", "soldier"),
+        (r"([0-9,]+)\s+ships?", "ship"),
+        (r"([0-9,]+)\s+soldiers?", "soldier"),
     ]
     for label, key in unit_patterns:
         if key in report.destroyed:
