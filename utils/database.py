@@ -368,6 +368,24 @@ async def set_pin_message(guild_id: int, enemy_nation_id: int, message_id: int) 
             raise RuntimeError(f"Supabase error {resp.status}: {await resp.text()}")
 
 
+
+
+async def set_war_room_objective(guild_id: int, enemy_nation_id: int, objective: str) -> None:
+    url = f"{_base_url}/rest/v1/war_rooms"
+    params = {"guild_id": f"eq.{guild_id}", "enemy_nation_id": f"eq.{enemy_nation_id}"}
+    payload = {"objective": objective}
+    async with _session.patch(url, params=params, json=payload) as resp:
+        if resp.status not in (200, 204):
+            raise RuntimeError(f"Supabase error {resp.status}: {await resp.text()}")
+
+
+async def get_war_room_objective(guild_id: int, enemy_nation_id: int) -> str | None:
+    room = await get_war_room(guild_id, enemy_nation_id)
+    if not room:
+        return None
+    return room.get("objective") or None
+
+
 async def delete_war_room(guild_id: int, enemy_nation_id: int) -> None:
     url = f"{_base_url}/rest/v1/war_rooms"
     params = {"guild_id": f"eq.{guild_id}", "enemy_nation_id": f"eq.{enemy_nation_id}"}
