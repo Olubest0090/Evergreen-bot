@@ -611,12 +611,31 @@ async def _war_room_tactical_context(bot, channel_id: int, author_id: int) -> st
             content = "Help me with this."
 
         async with message.channel.typing():
-            answer = await self._answer(
-                message.guild.id, content, str(message.author),
-                channel_id=message.channel.id,
-                author_id=message.author.id,
-            )
-        await message.reply(answer, mention_author=False)
+            try:
+                import asyncio
+                answer = await asyncio.wait_for(
+                    self._answer(
+                        message.guild.id,
+                        content,
+                        str(message.author),
+                        channel_id=message.channel.id,
+                        author_id=message.author.id,
+                    ),
+                    timeout=45,
+                )
+            except asyncio.TimeoutError:
+                answer = "API is slow right now — try /waradvice or ping me again in a minute."
+            except Exception as e:
+                log.exception("AI reply failed")
+                err = str(e)
+                if "rate limit" in err.lower():
+                    answer = "PnW API rate limit — wait \~30s then ask again."
+                else:
+                    answer = "Couldn't answer just now. Try /waradvice or ping again."
+        try:
+            await message.reply(answer, mention_author=False)
+        except discord.HTTPException:
+            pass
 
     async def _ingest_knowledge(self, message: discord.Message):
         session = self.bot.http_session

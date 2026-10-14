@@ -247,7 +247,7 @@ def advice_for_war(
     controls: ControlState,
     enemy_other_wars: int = 0,
 ) -> list[str]:
-    tips: list[str] = []
+    """Short milcom call — first line is the order."""
     air = simulate_air(our, enemy)
     nav = simulate_naval(our, enemy)
     gnd = simulate_ground(
@@ -256,74 +256,50 @@ def advice_for_war(
         def_has_air_sup=controls.air_sup_def,
     )
 
-    tips.append(f"MAP {our_map}/12 · enemy {enemy_map}/12 · Res {our_res} · enemy {enemy_res}")
-
-    bits = []
-    if controls.air_sup_att:
-        bits.append("you hold air superiority")
+    # --- primary order ---
     if controls.air_sup_def:
-        bits.append("enemy holds air superiority")
-    if controls.ground_ctrl_att:
-        bits.append("you hold ground control")
-    if controls.ground_ctrl_def:
-        bits.append("enemy holds ground control")
-    if controls.blockade_att:
-        bits.append("you blockade them")
-    if controls.blockade_def:
-        bits.append("they blockade you")
-    tips.append("Status: " + (", ".join(bits) if bits else "no space control yet"))
-
-    tips.append(
-        f"Enemy: {enemy.soldiers:,}S · {enemy.tanks:,}T · {enemy.aircraft:,} planes · {enemy.ships:,} ships"
-    )
-    tips.append(
-        f"You: {our.soldiers:,}S · {our.tanks:,}T · {our.aircraft:,} planes · {our.ships:,} ships"
-    )
-
-    if controls.air_sup_def:
-        tips.append(
-            f"**Break their air superiority** (any airstrike win). "
-            f"{our.aircraft:,} vs {enemy.aircraft:,} planes · "
-            f"\~{air['win_pct']:.0f}% any win / \~{air['immense_pct']:.0f}% IT · 4 MAP"
-        )
+        if our_map >= 4:
+            order = "**YES — airstrike aircraft** (break their air superiority)"
+        else:
+            order = f"**WAIT** — need 4 MAP to break their AS (you have {our_map})"
     elif not controls.air_sup_att and enemy.aircraft > 0:
-        tips.append(
-            f"**Take air superiority** (airstrike IT). "
-            f"{our.aircraft:,} vs {enemy.aircraft:,} · "
-            f"\~{air['immense_pct']:.0f}% IT · 4 MAP"
-        )
-    elif controls.air_sup_att:
-        tips.append("You hold air superiority — their tanks fight at half. Prefer ground.")
+        if our_map >= 4 and air["immense_pct"] >= 35:
+            order = "**YES — airstrike aircraft** (take air superiority)"
+        elif our_map >= 3:
+            order = "**YES — ground** (skip air this cycle)"
+        else:
+            order = f"**WAIT** — need more MAP (you have {our_map})"
     else:
-        tips.append("No enemy planes — skip air.")
+        # AS held or enemy has no planes
+        if our_map >= 3:
+            order = "**YES — ground** (AS held / no dogfight needed)"
+        else:
+            order = f"**WAIT** — need 3 MAP for ground (you have {our_map})"
 
+    tips = [order]
+
+    status = []
+    if controls.air_sup_att:
+        status.append("you have AS")
+    if controls.air_sup_def:
+        status.append("enemy has AS")
+    if controls.ground_ctrl_att:
+        status.append("you have GC")
+    if controls.ground_ctrl_def:
+        status.append("enemy has GC")
+    if controls.blockade_att:
+        status.append("you blockade")
     if controls.blockade_def:
-        tips.append(
-            "**Break blockade:** any naval win vs them, zero their ships, "
-            "or a partner at war with them lands naval IT."
-        )
-    if not controls.blockade_att and enemy.ships > 0:
-        tips.append(
-            f"**Blockade** needs naval IT. {our.ships:,} vs {enemy.ships:,} ships · "
-            f"\~{nav['win_pct']:.0f}% any win / \~{nav['immense_pct']:.0f}% IT · 4 MAP"
-        )
-    elif controls.blockade_att:
-        tips.append("You blockade them.")
-    elif enemy.ships <= 0:
-        tips.append("Enemy has no ships.")
-
+        status.append("you are blockaded")
     tips.append(
-        f"**Ground** {our.soldiers:,}S/{our.tanks:,}T vs {enemy.soldiers:,}S/{enemy.tanks:,}T · "
-        f"\~{gnd['win_pct']:.0f}% any win / \~{gnd['immense_pct']:.0f}% IT · 3 MAP"
-        + (" · you have GC (grounds chip planes)" if controls.ground_ctrl_att else "")
-        + (" · enemy has GC" if controls.ground_ctrl_def else "")
+        f"MAP {our_map}/12 · enemy {enemy_map}/12 · Res {our_res}/{enemy_res}"
+        + (f" · {', '.join(status)}" if status else "")
     )
 
-    if our_map < 3:
-        tips.append(f"MAP {our_map} — need 3 for ground, 4 for air/naval. Wait a turn.")
-    elif our_map < 4 and not controls.air_sup_att and enemy.aircraft > 0:
-        tips.append(f"MAP {our_map} — enough for ground, not air yet.")
-    else:
-        tips.append(f"MAP {our_map} — you can attack this cycle.")
-
+    # one-line odds only
+    tips.append(
+        f"Odds: Air {air['win_pct']:.0f}%/{air['immense_pct']:.0f}% IT · "
+        f"Ground {gnd['win_pct']:.0f}%/{gnd['immense_pct']:.0f}% IT · "
+        f"Naval {nav['win_pct']:.0f}%/{nav['immense_pct']:.0f}% IT"
+    )
     return tips

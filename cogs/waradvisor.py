@@ -171,19 +171,11 @@ class WarAdvisor(commands.Cog):
             )
             nav = simulate_naval(_force(att_n), _force(def_n))
 
-            war_note = f" · war `{war['id']}`" if war else " · no active war found (MAP/res defaulted)"
+            war_note = f" · war `{war['id']}`" if war else ""
             emb = embeds.info(
                 f"{att_n.get('nation_name')} → {def_n.get('nation_name')}{war_note}",
-                "\n".join(f"• {t}" for t in tips),
-            )
-            emb.add_field(
-                name="Odds",
-                value=(
-                    f"Air \~{air['win_pct']:.0f}% win / \~{air['immense_pct']:.0f}% IT\n"
-                    f"Ground \~{gnd['win_pct']:.0f}% win / \~{gnd['immense_pct']:.0f}% IT\n"
-                    f"Naval \~{nav['win_pct']:.0f}% win / \~{nav['immense_pct']:.0f}% IT"
-                ),
-                inline=True,
+                "
+".join(tips),
             )
             await interaction.followup.send(embed=emb)
 
