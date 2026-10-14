@@ -610,6 +610,7 @@ async def _war_room_tactical_context(bot, channel_id: int, author_id: int) -> st
 
         if not (is_mention or is_reply_to_bot):
             return
+        log.info("AI ping from %s in #%s: %s", message.author.id, getattr(message.channel, "name", "?"), (message.content or "")[:80])
 
         content = content_raw
         if self.bot.user:
@@ -645,8 +646,12 @@ async def _war_room_tactical_context(bot, channel_id: int, author_id: int) -> st
                     answer = "Couldn't answer just now — try again."
         try:
             await message.reply(answer, mention_author=False)
-        except discord.HTTPException as e:
+        except Exception as e:
             log.warning("AI reply send failed: %s", e)
+            try:
+                await message.channel.send(f"{message.author.mention} {answer}"[:1900])
+            except Exception as e2:
+                log.warning("AI channel.send failed: %s", e2)
 
 
     async def _ingest_knowledge(self, message: discord.Message):
