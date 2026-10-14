@@ -234,17 +234,32 @@ def advice_for_war(
     controls: ControlState,
     enemy_other_wars: int = 0,
 ) -> list[str]:
-    """Priority: air superiority → blockade → strip military; use MAP wisely."""
+    """Priority: air superiority → blockade → strip military.
+
+    MAP is per-war only (other wars do not share or drain this war's MAP).
+    Ally naval IT / blockade on the enemy can lift the enemy's blockade on partners.
+    """
     tips: list[str] = []
     air = simulate_air(our, enemy)
     nav = simulate_naval(our, enemy)
-    gnd = simulate_ground(our, enemy, att_has_air_sup=controls.air_sup_att, def_has_air_sup=controls.air_sup_def)
+    gnd = simulate_ground(
+        our, enemy,
+        att_has_air_sup=controls.air_sup_att,
+        def_has_air_sup=controls.air_sup_def,
+    )
 
-    tips.append(f"MAP: you {our_map} | enemy {enemy_map} | Res: you {our_res} | enemy {enemy_res}")
+    tips.append(
+        f"**This war only** — MAP you {our_map} | enemy {enemy_map} | "
+        f"Res you {our_res} | enemy {enemy_res}"
+    )
+    tips.append("_MAP does not transfer between wars. Each war has its own MAP._")
+
     if enemy_other_wars:
-        tips.append(f"Enemy is in **{enemy_other_wars}** other active war(s) — their MAP is split.")
+        tips.append(
+            f"Enemy is in **{enemy_other_wars}** other active war(s) "
+            f"(units/beige pressure only — **not** MAP on this war)."
+        )
 
-    # Controls
     ctrl = []
     if controls.air_sup_att:
         ctrl.append("YOU have air superiority")
@@ -258,51 +273,68 @@ def advice_for_war(
         ctrl.append("THEY blockade you")
     tips.append("Controls: " + (", ".join(ctrl) if ctrl else "none"))
 
-    # Priority chain
+    # 1) Air
     if not controls.air_sup_att and enemy.aircraft > 0:
         tips.append(
             f"**1. Air first** — dogfight for IT. Planes {our.aircraft} vs {enemy.aircraft} "
             f"({ratio_label(air['att_value'], air['def_value'])}, "
-            f"\~{air['immense_pct']:.0f}% IT). Costs {MAP_COST['air']} MAP."
+            f"\~{air['immense_pct']:.0f}% IT). Costs {MAP_COST['air']} MAP **on this war**."
         )
         if air["immense_pct"] < 35 and our.aircraft < enemy.aircraft:
-            tips.append("   Air is ugly — wait for more planes or coordinate with slot partners.")
+            tips.append("   Air is ugly — wait for more planes or let a stronger slot partner take IT.")
     elif controls.air_sup_att:
-        tips.append("**Air superiority held** — enemy tanks halved. Don't waste MAP dogfighting planes unless they rebuild.")
+        tips.append(
+            "**Air superiority held** — enemy tanks halved here. "
+            "Don't waste this war's MAP re-dogfighting unless they rebuild planes."
+        )
     else:
-        tips.append("Enemy has \~0 planes — air is optional.")
+        tips.append("Enemy has \~0 planes — air optional on this war.")
+
+    # 2) Blockade — ally naval can free partners
+    if controls.blockade_def:
+        tips.append(
+            "**Enemy is blockading you (or a partner).** "
+            "A **successful naval / blockade IT by anyone on this target** can lift their blockade on allies. "
+            "Prioritize naval if ships allow."
+        )
 
     if not controls.blockade_att and enemy.ships > 0 and our_map >= MAP_COST["naval"]:
         tips.append(
             f"**2. Blockade** — naval IT. Ships {our.ships} vs {enemy.ships} "
             f"({ratio_label(nav['att_value'], nav['def_value'])}, \~{nav['immense_pct']:.0f}% IT). "
-            f"{MAP_COST['naval']} MAP."
+            f"{MAP_COST['naval']} MAP on this war. "
+            f"Landing blockade also helps free partners they were blockading."
         )
     elif controls.blockade_att:
-        tips.append("**Blockade held** — they can't bank/trade.")
+        tips.append(
+            "**You blockade them** — they can't bank/trade. "
+            "Partners they were blockading should also be free of that blockade."
+        )
     elif enemy.ships == 0:
         tips.append("Enemy navy empty — blockade not needed.")
 
+    # 3) Ground
     tips.append(
-        f"**3. Strip ground** — soldiers/tanks. Ground value you {gnd['att_value']:.0f} vs {gnd['def_value']:.0f} "
+        f"**3. Strip ground** — S/T value you {gnd['att_value']:.0f} vs {gnd['def_value']:.0f} "
         f"({ratio_label(gnd['att_value'], gnd['def_value'])}, \~{gnd['immense_pct']:.0f}% IT). "
-        f"{MAP_COST['ground']} MAP."
+        f"{MAP_COST['ground']} MAP on this war."
     )
     if controls.air_sup_att:
-        tips.append("   With AS, ground is stronger — prioritize IT grounds over airstrike tanks.")
+        tips.append("   With AS, prefer grounds over re-airstriking planes.")
     if controls.ground_ctrl_att:
         tips.append("   You have GC — grounds also chip their aircraft. Keep grounding.")
 
-    # MAP budgeting
+    # MAP budgeting (this war only)
     if our_map < 3:
-        tips.append("**Low MAP** — wait a turn (MAP +1/turn) before attacking.")
+        tips.append("**Low MAP on this war** — wait a turn (+1 MAP/turn) before attacking.")
     elif our_map >= 7:
-        tips.append("**High MAP** — can open with air (4) then ground (3), or double ground.")
+        tips.append("**High MAP on this war** — can open air (4) then ground (3), or double ground.")
     elif our_map >= 4 and not controls.air_sup_att and enemy.aircraft > 0:
-        tips.append("Spend **4 MAP on air** this cycle if IT is realistic; otherwise bank for ground.")
+        tips.append("Spend **4 MAP on air** this war if IT is realistic; otherwise bank for ground.")
 
     tips.append(
-        "Order of ops when stacking slots: **shared air IT → naval blockade → grounds to zero military**. "
-        "If AS already held by a partner, others should ground/naval, not re-dogfight."
+        "Stack order: **air IT → naval blockade (frees partners too) → grounds**. "
+        "If a partner already holds AS on this target, others ground/naval — don't all re-dogfight. "
+        "Each war's MAP is independent."
     )
     return tips
