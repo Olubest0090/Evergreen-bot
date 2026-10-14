@@ -234,10 +234,13 @@ def advice_for_war(
     controls: ControlState,
     enemy_other_wars: int = 0,
 ) -> list[str]:
-    """Priority: air superiority → blockade → strip military.
+    """MILCOM advice from P&W wiki + admin blockade rules.
 
-    MAP is per-war only (other wars do not share or drain this war's MAP).
-    Ally naval IT / blockade on the enemy can lift the enemy's blockade on partners.
+    MAP is per-war only (+1/turn, cap 12).
+    Blockade break (wiki):
+      1) blockaded nation any naval win vs blockader
+      2) blockader reaches 0 ships
+      3) third party also at war with blockader lands naval IT on them
     """
     tips: list[str] = []
     air = simulate_air(our, enemy)
@@ -249,92 +252,100 @@ def advice_for_war(
     )
 
     tips.append(
-        f"**This war only** — MAP you {our_map} | enemy {enemy_map} | "
+        f"**This war MAP** you {our_map}/12 | enemy {enemy_map}/12 | "
         f"Res you {our_res} | enemy {enemy_res}"
     )
-    tips.append("_MAP does not transfer between wars. Each war has its own MAP._")
+    tips.append(
+        "_MAP is per war only. +1 MAP each turn (2h), cap 12. "
+        "Other wars do not share this MAP._"
+    )
 
     if enemy_other_wars:
         tips.append(
-            f"Enemy is in **{enemy_other_wars}** other active war(s) "
-            f"(units/beige pressure only — **not** MAP on this war)."
+            f"Enemy has **{enemy_other_wars}** other active war(s) "
+            f"(units/beige only — not this war's MAP)."
         )
 
     ctrl = []
     if controls.air_sup_att:
-        ctrl.append("YOU have air superiority")
+        ctrl.append("YOU air superiority")
     if controls.air_sup_def:
-        ctrl.append("ENEMY has air superiority")
+        ctrl.append("ENEMY air superiority")
     if controls.ground_ctrl_att:
-        ctrl.append("YOU have ground control")
+        ctrl.append("YOU ground control")
+    if controls.ground_ctrl_def:
+        ctrl.append("ENEMY ground control")
     if controls.blockade_att:
         ctrl.append("YOU blockade them")
     if controls.blockade_def:
         ctrl.append("THEY blockade you")
     tips.append("Controls: " + (", ".join(ctrl) if ctrl else "none"))
 
-    # 1) Air
+    # 1 Air
     if not controls.air_sup_att and enemy.aircraft > 0:
         tips.append(
-            f"**1. Air first** — dogfight for IT. Planes {our.aircraft} vs {enemy.aircraft} "
+            f"**1. Air IT** for superiority (halves enemy tanks). "
+            f"Planes {our.aircraft} vs {enemy.aircraft} "
             f"({ratio_label(air['att_value'], air['def_value'])}, "
-            f"\~{air['immense_pct']:.0f}% IT). Costs {MAP_COST['air']} MAP **on this war**."
+            f"\~{air['immense_pct']:.0f}% IT). **{MAP_COST['air']} MAP** this war."
         )
         if air["immense_pct"] < 35 and our.aircraft < enemy.aircraft:
-            tips.append("   Air is ugly — wait for more planes or let a stronger slot partner take IT.")
+            tips.append("   Weak air odds — wait or let a stronger slot partner take IT.")
     elif controls.air_sup_att:
         tips.append(
-            "**Air superiority held** — enemy tanks halved here. "
-            "Don't waste this war's MAP re-dogfighting unless they rebuild planes."
+            "**Air superiority held** — enemy tanks at 50%. "
+            "Any enemy airstrike win can break it. Don't re-dogfight unless they rebuild."
         )
     else:
-        tips.append("Enemy has \~0 planes — air optional on this war.")
+        tips.append("Enemy \~0 planes — air optional.")
 
-    # 2) Blockade — ally naval can free partners
+    # 2 Blockade (official break rules)
     if controls.blockade_def:
         tips.append(
-            "**Enemy is blockading you (or a partner).** "
-            "A **successful naval / blockade IT by anyone on this target** can lift their blockade on allies. "
-            "Prioritize naval if ships allow."
+            "**You are blockaded.** Break by: (1) any naval win vs the blockader, "
+            "(2) zero their ships, or (3) an ally also at war with them lands **naval IT**."
         )
 
-    if not controls.blockade_att and enemy.ships > 0 and our_map >= MAP_COST["naval"]:
-        tips.append(
-            f"**2. Blockade** — naval IT. Ships {our.ships} vs {enemy.ships} "
-            f"({ratio_label(nav['att_value'], nav['def_value'])}, \~{nav['immense_pct']:.0f}% IT). "
-            f"{MAP_COST['naval']} MAP on this war. "
-            f"Landing blockade also helps free partners they were blockading."
-        )
+    if not controls.blockade_att and enemy.ships > 0:
+        if our_map >= MAP_COST["naval"]:
+            tips.append(
+                f"**2. Naval IT → blockade.** Ships {our.ships} vs {enemy.ships} "
+                f"({ratio_label(nav['att_value'], nav['def_value'])}, "
+                f"\~{nav['immense_pct']:.0f}% IT). **{MAP_COST['naval']} MAP**. "
+                f"Your naval IT also frees allies they were blockading."
+            )
+        else:
+            tips.append(
+                f"**2. Want blockade** but need {MAP_COST['naval']} MAP "
+                f"(you have {our_map}). Bank a turn or let a partner naval IT."
+            )
     elif controls.blockade_att:
         tips.append(
-            "**You blockade them** — they can't bank/trade. "
-            "Partners they were blockading should also be free of that blockade."
+            "**You blockade them** — no bank/trade for them. "
+            "Broken if they get any naval win on you, you hit 0 ships, "
+            "or someone else naval-ITs you while at war with you."
         )
     elif enemy.ships == 0:
-        tips.append("Enemy navy empty — blockade not needed.")
+        tips.append("Enemy 0 ships — blockade N/A (0 ships also clears their blockade on others).")
 
-    # 3) Ground
+    # 3 Ground
     tips.append(
-        f"**3. Strip ground** — S/T value you {gnd['att_value']:.0f} vs {gnd['def_value']:.0f} "
+        f"**3. Ground** to strip S/T. Value {gnd['att_value']:.0f} vs {gnd['def_value']:.0f} "
         f"({ratio_label(gnd['att_value'], gnd['def_value'])}, \~{gnd['immense_pct']:.0f}% IT). "
-        f"{MAP_COST['ground']} MAP on this war."
+        f"**{MAP_COST['ground']} MAP**."
     )
     if controls.air_sup_att:
-        tips.append("   With AS, prefer grounds over re-airstriking planes.")
+        tips.append("   With AS, prefer ground over re-dogfighting.")
     if controls.ground_ctrl_att:
-        tips.append("   You have GC — grounds also chip their aircraft. Keep grounding.")
+        tips.append("   Ground control held — winning grounds also chip their aircraft.")
 
-    # MAP budgeting (this war only)
     if our_map < 3:
-        tips.append("**Low MAP on this war** — wait a turn (+1 MAP/turn) before attacking.")
-    elif our_map >= 7:
-        tips.append("**High MAP on this war** — can open air (4) then ground (3), or double ground.")
-    elif our_map >= 4 and not controls.air_sup_att and enemy.aircraft > 0:
-        tips.append("Spend **4 MAP on air** this war if IT is realistic; otherwise bank for ground.")
+        tips.append("**Low MAP** — wait (+1/turn) before spending.")
+    elif our_map >= 7 and not controls.air_sup_att and enemy.aircraft > 0:
+        tips.append("**High MAP** — can air (4) then ground (3) same cycle if IT is realistic.")
 
     tips.append(
-        "Stack order: **air IT → naval blockade (frees partners too) → grounds**. "
-        "If a partner already holds AS on this target, others ground/naval — don't all re-dogfight. "
-        "Each war's MAP is independent."
+        "Stack: **air IT → naval IT (blockade + free partners) → grounds**. "
+        "If a partner already holds AS on this target, others ground/naval."
     )
     return tips
