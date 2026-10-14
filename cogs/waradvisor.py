@@ -131,7 +131,14 @@ async def _load_fighter(client, nation: dict, enemy: dict) -> dict:
     }
 
 
-def _stack_orders(fighters: list[dict], enemy: dict, objective: str | None) -> list[str]:
+def _hours_until_map(current: int, need: int) -> int:
+    """MAP +1 every 2 hours."""
+    missing = max(0, need - int(current or 0))
+    return missing * 2
+
+
+def _stack_orders(fighters: list[dict], enemy: dict, objective: str | None) -> str:
+    """Plain instructional orders — who waits on whom. Sims run off-screen."""
     obj = objective or OBJ_AIR_BLOCKADE_GROUND
     label = OBJ_LABELS.get(obj, obj)
     en_planes = int(enemy.get("aircraft") or 0)
@@ -141,90 +148,152 @@ def _stack_orders(fighters: list[dict], enemy: dict, objective: str | None) -> l
     stack_blockade = any(f["controls"].blockade_att for f in fighters)
 
     need_air = obj in (OBJ_AIR_BLOCKADE_GROUND, OBJ_AIR_GROUND) and not stack_as and en_planes > 0
-    need_blockade = obj in (OBJ_AIR_BLOCKADE_GROUND, OBJ_BLOCKADE_GROUND) and not stack_blockade and en_ships > 0
-    # ground always eventually, but not before air/blockade if objective says so
-
-    lines: list[str] = []
-    lines.append(f"**Objective:** {label}")
-    lines.append("")
-
-    air_ready = sorted(
-        [f for f in fighters if f["map"] >= 4],
-        key=lambda f: f["air"]["immense_pct"],
-        reverse=True,
+    need_blockade = (
+        obj in (OBJ_AIR_BLOCKADE_GROUND, OBJ_BLOCKADE_GROUND)
+        and not stack_blockade
+        and en_ships > 0
     )
-    naval_ready = sorted(
-        [f for f in fighters if f["map"] >= 4 and f["ships"] > 0],
+
+    # Best candidates by sim (no numbers shown to members)
+    by_air = sorted(fighters, key=lambda f: f["air"]["immense_pct"], reverse=True)
+    by_nav = sorted(
+        [f for f in fighters if f["ships"] > 0],
         key=lambda f: f["nav"]["immense_pct"],
         reverse=True,
     )
+    by_gnd = sorted(fighters, key=lambda f: f["gnd"]["win_pct"], reverse=True)
 
-    step = 1
+    lines: list[str] = []
+    lines.append(f"**Orders vs {_name(enemy)}** · {label}")
+    lines.append("")
 
-    # --- AIR ---
+    air_lead = None
+    nav_lead = None
+
+    # ---- AIR ----
     if obj in (OBJ_AIR_BLOCKADE_GROUND, OBJ_AIR_GROUND):
         if stack_as:
-            lines.append(f"**{step}. Air** — done (stack holds AS).")
+            lines.append("Air superiority is already up — nobody dogfights again unless they rebuild planes.")
         elif en_planes <= 0:
-            lines.append(f"**{step}. Air** — skip (enemy 0 planes).")
-        elif air_ready:
-            lead = air_ready[0]
-            lines.append(
-                f"**{step}. Air** — **{lead['name']}** airstrike **aircraft** first "
-                f"(\~{lead['air']['immense_pct']:.0f}% IT, MAP {lead['map']})."
-            )
-            others = [f["name"] for f in fighters if f["id"] != lead["id"]]
-            if others:
-                lines.append(f"   Others hold until AS is up: {', '.join(others)}")
+            lines.append("Enemy has no planes — skip air.")
         else:
-            lines.append(f"**{step}. Air** — nobody has 4 MAP → **WAIT**, then strongest planes dogfight.")
-        step += 1
+            # pick who should take AS
+            ready = [f for f in by_air if f["map"] >= 4]
+            if ready:
+                air_lead = ready[0]
+                lines.append(
+                    f"**{air_lead['name']}** — you go first. **Airstrike aircraft** now and take AS."
+                )
+                hold = [f["name"] for f in fighters if f["id"] != air_lead["id"]]
+                if hold:
+                    lines.append(
+                        f"**{' · '.join(hold)}** — do **not** airstrike until **{air_lead['name']}** has AS."
+                    )
+            else:
+                # soonest to 4 MAP among best air
+                air_lead = by_air[0]
+                hrs = _hours_until_map(air_lead["map"], 4)
+                lines.append(
+                    f"**{air_lead['name']}** — bank MAP. In about **{hrs}h** you’ll have 4 MAP — "
+                    f"then **airstrike aircraft** for AS."
+                )
+                others = [f["name"] for f in fighters if f["id"] != air_lead["id"]]
+                if others:
+                    lines.append(
+                        f"**{' · '.join(others)}** — wait for **{air_lead['name']}** to land AS before you spend MAP on air."
+                    )
 
-    # --- BLOCKADE ---
+    # ---- BLOCKADE ----
     if obj in (OBJ_AIR_BLOCKADE_GROUND, OBJ_BLOCKADE_GROUND):
-        if need_air:
-            lines.append(f"**{step}. Blockade** — after AS is secured.")
-        elif stack_blockade:
-            lines.append(f"**{step}. Blockade** — done.")
+        lines.append("")
+        if stack_blockade:
+            lines.append("Blockade is already up.")
         elif en_ships <= 0:
-            lines.append(f"**{step}. Blockade** — skip (enemy 0 ships).")
-        elif naval_ready:
-            lead = naval_ready[0]
-            lines.append(
-                f"**{step}. Blockade** — **{lead['name']}** **naval** "
-                f"(\~{lead['nav']['immense_pct']:.0f}% IT, MAP {lead['map']})."
-            )
+            lines.append("Enemy has no ships — skip blockade.")
         else:
-            lines.append(f"**{step}. Blockade** — need 4 MAP + ships → **WAIT** / rebuild.")
-        step += 1
+            nav_cands = by_nav if by_nav else by_air
+            nav_ready = [f for f in nav_cands if f["map"] >= 4 and f["ships"] > 0]
+            if need_air and air_lead:
+                # sequence after air
+                if nav_ready and nav_ready[0]["id"] != air_lead["id"]:
+                    nav_lead = nav_ready[0]
+                    lines.append(
+                        f"**{nav_lead['name']}** — **after {air_lead['name']} has AS**, you **naval** for blockade. "
+                        f"Do not naval before that."
+                    )
+                elif nav_ready:
+                    nav_lead = nav_ready[0]
+                    lines.append(
+                        f"**{nav_lead['name']}** — after your AS is secure, **naval** for blockade same war if MAP allows "
+                        f"(need 4 MAP left or wait a cycle)."
+                    )
+                else:
+                    nav_lead = nav_cands[0] if nav_cands else None
+                    if nav_lead:
+                        hrs = _hours_until_map(nav_lead["map"], 4)
+                        lines.append(
+                            f"**{nav_lead['name']}** — after AS, bank for naval. \~**{hrs}h** to 4 MAP, then **naval** blockade."
+                        )
+                rest = [
+                    f["name"] for f in fighters
+                    if (not air_lead or f["id"] != air_lead["id"])
+                    and (not nav_lead or f["id"] != nav_lead["id"])
+                ]
+                if rest and nav_lead:
+                    lines.append(
+                        f"**{' · '.join(rest)}** — do **not** naval until **{nav_lead['name']}** lands the blockade."
+                    )
+            else:
+                # air not blocking — blockade now
+                if nav_ready:
+                    nav_lead = nav_ready[0]
+                    lines.append(
+                        f"**{nav_lead['name']}** — you take blockade. **Naval** now."
+                    )
+                    rest = [f["name"] for f in fighters if f["id"] != nav_lead["id"]]
+                    if rest:
+                        lines.append(
+                            f"**{' · '.join(rest)}** — no naval until **{nav_lead['name']}** has the blockade."
+                        )
+                else:
+                    nav_lead = by_nav[0] if by_nav else fighters[0]
+                    hrs = _hours_until_map(nav_lead["map"], 4)
+                    lines.append(
+                        f"**{nav_lead['name']}** — need 4 MAP for naval (\~**{hrs}h**). "
+                        f"Then you take the blockade; others wait on you."
+                    )
 
-    # --- GROUND (everyone listed) ---
-    can_ground_now = not need_air and not need_blockade
-    lines.append(f"**{step}. Ground**" + (" — go now" if can_ground_now else " — after air/blockade steps"))
-    for f in sorted(fighters, key=lambda x: (-x["map"], x["name"])):
-        if f["map"] >= 3 and can_ground_now:
-            action = f"**GROUND** (\~{f['gnd']['win_pct']:.0f}% win)"
-        elif f["map"] >= 3 and not can_ground_now:
-            action = "hold — finish air/blockade first"
-        else:
-            action = f"**WAIT** MAP {f['map']}/12 (need 3)"
-        note = []
-        if f["controls"].air_sup_att:
-            note.append("AS")
-        if f["controls"].blockade_att:
-            note.append("blockade")
-        if f["controls"].ground_ctrl_att:
-            note.append("GC")
-        tag = f" · {', '.join(note)}" if note else ""
-        lines.append(f"• **{f['name']}** — {action}{tag}")
-
+    # ---- GROUND ----
     lines.append("")
-    lines.append(
-        f"Enemy **{_name(enemy)}** — "
-        f"{int(enemy.get('soldiers') or 0):,}S · {int(enemy.get('tanks') or 0):,}T · "
-        f"{en_planes} planes · {en_ships} ships"
-    )
-    return lines
+    if need_air or need_blockade:
+        wait_on = []
+        if need_air and air_lead:
+            wait_on.append(f"{air_lead['name']} (AS)")
+        if need_blockade and nav_lead:
+            wait_on.append(f"{nav_lead['name']} (blockade)")
+        who = " and ".join(wait_on) if wait_on else "air/blockade steps"
+        lines.append(f"**Ground** — nobody grounds until {who} is done.")
+        for f in fighters:
+            hrs3 = _hours_until_map(f["map"], 3)
+            if f["map"] >= 3:
+                lines.append(f"• **{f['name']}** — hold MAP for now; ground after that.")
+            else:
+                lines.append(
+                    f"• **{f['name']}** — bank MAP (\~**{hrs3}h** to 3). Ground only after {who}."
+                )
+    else:
+        lines.append("**Ground** — strip military. Go in this order (best odds first):")
+        for f in by_gnd:
+            if f["map"] >= 3:
+                lines.append(f"• **{f['name']}** — **ground now**.")
+            else:
+                hrs = _hours_until_map(f["map"], 3)
+                lines.append(
+                    f"• **{f['name']}** — wait \~**{hrs}h** for 3 MAP, then ground."
+                )
+
+    return "\n".join(lines)
+
 
 
 class ObjectiveView(discord.ui.View):
@@ -323,11 +392,10 @@ class WarAdvisor(commands.Cog):
             if inactive:
                 lines.insert(1, "_Enemy inactive 3d+ — still following objective, loot focus OK._")
 
-            emb = embeds.info(
-                f"MILCOM · {_name(def_n)} · {len(fighters)} on target",
-                "\n".join(lines),
-            )
-            await interaction.followup.send(embed=emb)
+            body = lines if isinstance(lines, str) else "\n".join(lines)
+            if len(body) > 1900:
+                body = body[:1900] + "\n…"
+            await interaction.followup.send(body)
         except Exception as e:
             log.exception("waradvice")
             err = str(e)
