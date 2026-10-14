@@ -43,8 +43,9 @@ class Simulate(commands.Cog):
         self.bot = bot
 
     async def _two_nations(self, interaction: discord.Interaction, attacker: str, defender: str):
-        att = await resolve_nation(self.bot, interaction, attacker)
-        deff = await resolve_nation(self.bot, interaction, defender)
+        client = self.bot.pw_client
+        att = await resolve_nation(client, attacker)
+        deff = await resolve_nation(client, defender)
         return att, deff
 
     @sim.command(name="air", description="Simulate airstrike / dogfight odds")
