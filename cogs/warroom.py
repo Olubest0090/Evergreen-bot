@@ -198,54 +198,74 @@ def build_attack_embed(war: dict, attack: dict, when) -> discord.Embed:
     def ally(n):
         return (n.get("alliance") or {}).get("name") or "No alliance"
 
-    attack_type = attack.get("type") or "Attack"
-    label = ATTACK_LABELS.get(attack_type, f"⚔️ {attack_type}")
+    attack_type = (attack.get("type") or "Attack").upper()
+    label = ATTACK_LABELS.get(attack_type, f"⚔️ {attack.get('type') or 'Attack'}")
 
     lines = [f"{link(actor)} of **{ally(actor)}** → {link(target)} of **{ally(target)}**"]
 
+    # Money loot (API may use moneystolen or money_looted)
+    loot = float(attack.get("moneystolen") or attack.get("money_looted") or 0)
+
     if attack_type in LOOT_ATTACKS:
-        loot = attack.get("moneystolen") or 0
         if loot > 0:
             if attack_type == "ALLIANCELOOT":
                 lines.append(f"**Alliance loot:** **${loot:,.0f}**")
             else:
                 lines.append(f"**Victory loot:** **${loot:,.0f}**")
-
         loot_info = (attack.get("loot_info") or "").strip()
         if loot_info:
             if len(loot_info) > 900:
                 loot_info = loot_info[:900] + "…"
             lines.append(f"**Loot details:** {loot_info}")
-
-        if not loot and not loot_info:
-            lines.append("*No loot amount reported by the API for this attack.*")
-
+        if loot <= 0 and not loot_info:
+            lines.append("*No loot amount on this API row.*")
     elif attack_type not in NON_COMBAT_ATTACKS:
-        lines.append(f"Result: **{ATTACK_RESULTS.get(attack.get('success'), 'Unknown')}**")
-
-        loot = attack.get("moneystolen") or 0
+        result = ATTACK_RESULTS.get(attack.get("success"), attack.get("success", "Unknown"))
+        lines.append(f"**Result:** {result}")
         if loot > 0:
-            lines.append(f"Looted: **${loot:,.0f}**")
+            lines.append(f"**Cash looted:** **${loot:,.0f}**")
+        loot_info = (attack.get("loot_info") or "").strip()
+        if loot_info:
+            if len(loot_info) > 500:
+                loot_info = loot_info[:500] + "…"
+            lines.append(f"**Loot/details:** {loot_info}")
+
+        # Casualties if API provides
+        cas = []
+        for key, label_c in (
+            ("soldiers_killed", "soldiers"),
+            ("tanks_killed", "tanks"),
+            ("aircraft_killed", "aircraft"),
+            ("ships_killed", "ships"),
+        ):
+            v = attack.get(key)
+            if v:
+                cas.append(f"{int(v):,} {label_c}")
+        if cas:
+            lines.append("**Units hit:** " + ", ".join(cas))
 
         infra = attack.get("infradestroyed") or 0
-        if infra > 0:
+        if infra:
             value = attack.get("infra_destroyed_value") or 0
             before = attack.get("city_infra_before") or 0
-            lines.append(
-                f"Infrastructure destroyed: **{infra:,.2f}** (worth ${value:,.0f}), "
-                f"previously {before:,.2f}"
-            )
-
+            bit = f"**Infra:** {float(infra):,.2f}"
+            if value:
+                bit += f" (${float(value):,.0f})"
+            if before:
+                bit += f" · city was {float(before):,.0f}"
+            lines.append(bit)
         lost = attack.get("improvementslost") or 0
-        if lost > 0:
-            lines.append(f"Improvements destroyed: **{lost}**")
+        if lost:
+            lines.append(f"**Improvements lost:** {int(lost)}")
+        res = attack.get("resistance_eliminated")
+        if res:
+            lines.append(f"**Resistance:** −{res}")
 
-    embed = discord.Embed(
-        title=label,
-        description="\n".join(lines),
-        color=0x2E7D32 if ours else 0xC62828,
-        timestamp=when,
-    )
+    when_str = when.strftime("%H:%M UTC") if hasattr(when, "strftime") else str(when)
+    lines.append(f"_Time: {when_str}_")
+
+    color = discord.Color.green() if ours else discord.Color.red()
+    embed = discord.Embed(title=label, description="\n".join(lines), color=color)
     embed.set_footer(text=f"{embeds.FOOTER_TEXT} · {'our attack' if ours else 'enemy attack'}")
     return embed
 
@@ -619,7 +639,50 @@ class WarRoom(commands.Cog):
                 continue
             for _, _, attack in batch:
                 await database.mark_attack_seen(guild_id, int(attack["id"]))
+            # Re-issue stack orders so members know what to do next
+            try:
+                await post_stack_advice_for_room(self.bot, guild_id, channel, enemy_id)
+            except Exception as e:
+                print(f"[warroom] advice after attacks: {e}")
 
+
+
+
+async def post_stack_advice_for_room(bot, guild_id: int, channel: discord.TextChannel, enemy_id: int) -> None:
+    """After live attacks, refresh sequential MILCOM orders in the room."""
+    try:
+        from cogs.waradvisor import (
+            _load_fighter,
+            _stack_orders,
+            OBJ_AIR_BLOCKADE_GROUND,
+        )
+        from cogs.warroom import get_our_nations_for_enemy
+    except Exception as e:
+        print(f"[warroom] advice import failed: {e}")
+        return
+    try:
+        enemy = await bot.pw_client.get_nation(int(enemy_id))
+        if not enemy:
+            return
+        our_list = await get_our_nations_for_enemy(bot, guild_id, int(enemy_id))
+        if not our_list:
+            return
+        fighters = []
+        for n in our_list:
+            try:
+                fighters.append(await _load_fighter(bot.pw_client, n, enemy))
+            except Exception as e:
+                print(f"[warroom] fighter load: {e}")
+        if not fighters:
+            return
+        room = await database.get_war_room(guild_id, int(enemy_id))
+        objective = (room or {}).get("objective") or OBJ_AIR_BLOCKADE_GROUND
+        body = _stack_orders(fighters, enemy, objective)
+        if len(body) > 1900:
+            body = body[:1900] + "\n…"
+        await channel.send("**Updated orders** (after latest attack)\n" + body)
+    except Exception as e:
+        print(f"[warroom] post_stack_advice failed: {e}")
 
 
 
