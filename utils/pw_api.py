@@ -289,11 +289,10 @@ class PWApiClient:
                 city_infra_before
                 improvementslost
                 resistance_eliminated
-                soldiers_killed
-                tanks_killed
-                aircraft_killed
-                ships_killed
-                money_looted
+                attcas1
+                attcas2
+                defcas1
+                defcas2
               }
             }
           }

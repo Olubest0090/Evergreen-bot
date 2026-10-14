@@ -586,13 +586,22 @@ async def _war_room_tactical_context(bot, channel_id: int, author_id: int) -> st
             await self._ingest_knowledge(message)
             return
 
+        # Spy channel = desk ONLY
+        if SPY_CHANNEL_ID and message.channel.id == SPY_CHANNEL_ID:
+            try:
+                await self._handle_spy_desk(message)
+            except Exception:
+                log.exception("spy desk failed")
+            return
+
         content_raw = message.content or ""
         is_mention = False
         if self.bot.user:
+            uid = self.bot.user.id
             is_mention = (
                 self.bot.user in message.mentions
-                or f"<@{self.bot.user.id}>" in content_raw
-                or f"<@!{self.bot.user.id}>" in content_raw
+                or f"<@{uid}>" in content_raw
+                or f"<@!{uid}>" in content_raw
             )
         is_reply_to_bot = False
         if message.reference and message.reference.resolved:
@@ -600,58 +609,47 @@ async def _war_room_tactical_context(bot, channel_id: int, author_id: int) -> st
             if isinstance(ref, discord.Message) and self.bot.user and ref.author.id == self.bot.user.id:
                 is_reply_to_bot = True
 
-        # Spy channel: parse ops, but still answer @mentions / replies
-        if SPY_CHANNEL_ID and message.channel.id == SPY_CHANNEL_ID:
-            if is_mention or is_reply_to_bot:
-                pass  # fall through to AI reply below
-            else:
-                await self._handle_spy_desk(message)
-                return
-
         if not (is_mention or is_reply_to_bot):
             return
-        log.info("AI ping from %s in #%s: %s", message.author.id, getattr(message.channel, "name", "?"), (message.content or "")[:80])
+
+        log.info("AI ping from %s in #%s: %s", message.author.id, getattr(message.channel, "name", "?"), content_raw[:80])
 
         content = content_raw
         if self.bot.user:
-            content = (
-                content.replace(f"<@{self.bot.user.id}>", "")
-                .replace(f"<@!{self.bot.user.id}>", "")
-                .strip()
-            )
+            content = content.replace(f"<@{self.bot.user.id}>", "").replace(f"<@!{self.bot.user.id}>", "").strip()
         if not content:
             content = "Help me with this."
 
         import asyncio
+        answer = "…"
         async with message.channel.typing():
             try:
                 answer = await asyncio.wait_for(
                     self._answer(
-                        message.guild.id,
-                        content,
-                        str(message.author),
-                        channel_id=message.channel.id,
-                        author_id=message.author.id,
+                        message.guild.id, content, str(message.author),
+                        channel_id=message.channel.id, author_id=message.author.id,
                     ),
                     timeout=45,
                 )
             except asyncio.TimeoutError:
-                answer = "API is slow right now — try again in a minute."
+                answer = "API is slow — try again in a minute."
             except Exception as e:
                 log.exception("AI reply failed")
                 err = str(e)
                 if "rate limit" in err.lower():
-                    answer = "PnW API rate limit — wait \~30s then ask again."
+                    answer = "PnW rate limit — wait about 30s."
+                elif "GROQ" in err or "not configured" in err.lower():
+                    answer = "AI key missing on Render (GROQ_API_KEY)."
                 else:
-                    answer = "Couldn't answer just now — try again."
+                    answer = "Couldn't answer — try again."
         try:
             await message.reply(answer, mention_author=False)
         except Exception as e:
-            log.warning("AI reply send failed: %s", e)
+            log.warning("reply failed: %s", e)
             try:
                 await message.channel.send(f"{message.author.mention} {answer}"[:1900])
             except Exception as e2:
-                log.warning("AI channel.send failed: %s", e2)
+                log.warning("channel.send failed: %s", e2)
 
 
     async def _ingest_knowledge(self, message: discord.Message):
