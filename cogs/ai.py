@@ -9,6 +9,10 @@ import discord
 from discord.ext import commands
 
 from utils import database
+from utils.battle_sim import (
+    Force, ControlState, advice_for_war, infer_controls_from_attacks,
+    simulate_air, simulate_ground, simulate_naval,
+)
 from utils.spy_parse import parse_spy_message, format_money, value_resources, unit_production_value, SPY_RECRUIT_COST
 
 log = logging.getLogger("evergreen-ai")
@@ -368,6 +372,150 @@ class AI(commands.Cog):
             os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant"),
         )
 
+
+async def _war_room_tactical_context(bot, channel_id: int, author_id: int) -> str:
+    """Live war-room brief: enemy, linked nation, MAP, controls, specific attack tips."""
+    try:
+        room = await database.get_war_room_by_channel(channel_id)
+    except Exception:
+        room = None
+    if not room or not room.get("enemy_nation_id"):
+        return ""
+
+    client = getattr(bot, "pw_client", None)
+    if not client:
+        return ""
+
+    lines = []
+    try:
+        enemy = await client.get_nation(int(room["enemy_nation_id"]))
+        if not enemy:
+            return "War room enemy nation not found."
+        lines.append(
+            f"WAR ROOM TARGET: {enemy.get('nation_name')} id={enemy.get('id')} "
+            f"AA={((enemy.get('alliance') or {}).get('name'))} "
+            f"S={enemy.get('soldiers')} T={enemy.get('tanks')} "
+            f"planes={enemy.get('aircraft')} ships={enemy.get('ships')} "
+            f"missiles={enemy.get('missiles')} nukes={enemy.get('nukes')}"
+        )
+
+        our_id = await database.get_nation_for_user(author_id)
+        our = await client.get_nation(int(our_id)) if our_id else None
+        if our:
+            lines.append(
+                f"SPEAKER NATION (linked): {our.get('nation_name')} id={our.get('id')} "
+                f"S={our.get('soldiers')} T={our.get('tanks')} "
+                f"planes={our.get('aircraft')} ships={our.get('ships')} MAP context below"
+            )
+        else:
+            lines.append("SPEAKER has no linked nation — give general stack advice only.")
+
+        war = None
+        if our:
+            att_id, def_id = int(our["id"]), int(enemy["id"])
+            for w in (our.get("offensive_wars") or []) + (our.get("defensive_wars") or []):
+                if (w.get("turns_left") or 0) <= 0:
+                    continue
+                if {int(w.get("att_id") or 0), int(w.get("def_id") or 0)} == {att_id, def_id}:
+                    war = await client.get_war(int(w["id"]))
+                    break
+        if war:
+            att_id = int(our["id"])
+            if int(war.get("att_id") or 0) == att_id:
+                our_map = int(war.get("att_points") or 0)
+                enemy_map = int(war.get("def_points") or 0)
+                our_res = int(war.get("att_resistance") or 100)
+                enemy_res = int(war.get("def_resistance") or 100)
+            else:
+                our_map = int(war.get("def_points") or 0)
+                enemy_map = int(war.get("att_points") or 0)
+                our_res = int(war.get("def_resistance") or 100)
+                enemy_res = int(war.get("att_resistance") or 100)
+            lines.append(
+                f"THIS WAR id={war.get('id')} type={war.get('war_type')} "
+                f"MAP you={our_map}/12 enemy={enemy_map}/12 "
+                f"Res you={our_res} enemy={enemy_res}"
+            )
+            try:
+                attacks = await client.get_war_attacks(int(war["id"]))
+                controls = infer_controls_from_attacks(attacks or [], att_id)
+            except Exception:
+                controls = ControlState()
+            ctrl = []
+            if controls.air_sup_att:
+                ctrl.append("YOU air superiority")
+            if controls.air_sup_def:
+                ctrl.append("ENEMY air superiority")
+            if controls.ground_ctrl_att:
+                ctrl.append("YOU ground control")
+            if controls.ground_ctrl_def:
+                ctrl.append("ENEMY ground control")
+            if controls.blockade_att:
+                ctrl.append("YOU blockade")
+            if controls.blockade_def:
+                ctrl.append("ENEMY blockades you")
+            lines.append("Controls: " + (", ".join(ctrl) if ctrl else "none"))
+
+            our_f = Force(
+                soldiers=int(our.get("soldiers") or 0),
+                tanks=int(our.get("tanks") or 0),
+                aircraft=int(our.get("aircraft") or 0),
+                ships=int(our.get("ships") or 0),
+            )
+            en_f = Force(
+                soldiers=int(enemy.get("soldiers") or 0),
+                tanks=int(enemy.get("tanks") or 0),
+                aircraft=int(enemy.get("aircraft") or 0),
+                ships=int(enemy.get("ships") or 0),
+            )
+            air = simulate_air(our_f, en_f)
+            gnd = simulate_ground(
+                our_f, en_f,
+                att_has_air_sup=controls.air_sup_att,
+                def_has_air_sup=controls.air_sup_def,
+            )
+            nav = simulate_naval(our_f, en_f)
+            lines.append(
+                f"Odds: Air \~{air['win_pct']:.0f}% win/\~{air['immense_pct']:.0f}% IT | "
+                f"Ground \~{gnd['win_pct']:.0f}%/\~{gnd['immense_pct']:.0f}% IT | "
+                f"Naval \~{nav['win_pct']:.0f}%/\~{nav['immense_pct']:.0f}% IT"
+            )
+            tips = advice_for_war(
+                our=our_f, enemy=en_f,
+                our_map=our_map, enemy_map=enemy_map,
+                our_res=our_res, enemy_res=enemy_res,
+                controls=controls,
+            )
+            lines.append("Tactical brief:\n" + "\n".join(f"- {t}" for t in tips))
+        else:
+            lines.append(
+                "No active war found between speaker and this room's enemy "
+                "(speaker may be a third slot partner — advise the stack)."
+            )
+            lines.append(
+                f"Enemy still: planes={enemy.get('aircraft')} ships={enemy.get('ships')} "
+                f"S={enemy.get('soldiers')} T={enemy.get('tanks')}"
+            )
+    except Exception as e:
+        lines.append(f"(war room context error: {e})")
+
+    lines.append(
+        "ATTACK TYPES (be specific when advising):\n"
+        "- Airstrike targets: aircraft (dogfight / take or break AS), soldiers, tanks, "
+        "ships, infrastructure, money. Always costs 4 MAP. Immense on air = air superiority "
+        "(enemy tanks at 50%). Any air win breaks enemy AS.\n"
+        "- Ground: 3 MAP. Immense = ground control (later ground wins chip enemy planes). "
+        "Only ground loots cash.\n"
+        "- Naval targets: ships (standard), also naval can pressure infra/ground/air variants "
+        "in-game where available. 4 MAP. Immense = blockade. Any naval win breaks their blockade "
+        "on you; ally naval IT on the blockader frees partners.\n"
+        "- Missile 8 MAP, Nuke 12 MAP.\n"
+        "When someone says 'airstrike' pick the TARGET (usually aircraft if AS not held, "
+        "else tanks/ships/soldiers to strip mil). Say yes/no with MAP check and odds."
+    )
+    return "\n".join(lines)
+
+
     async def _knowledge_context(self, guild_id: int) -> str:
         try:
             rows = await database.list_ai_knowledge(guild_id, limit=40)
@@ -388,18 +536,40 @@ class AI(commands.Cog):
             total += len(block)
         return "\n".join(chunks) if chunks else "(No alliance knowledge stored yet.)"
 
-    async def _answer(self, guild_id: int, question: str, author: str) -> str:
+    async def _answer(
+        self,
+        guild_id: int,
+        question: str,
+        author: str,
+        *,
+        channel_id: int | None = None,
+        author_id: int | None = None,
+    ) -> str:
         knowledge = await self._knowledge_context(guild_id)
         live = await _live_pw_context(self.bot, guild_id, question)
+        war_ctx = ""
+        if channel_id and author_id:
+            war_ctx = await _war_room_tactical_context(self.bot, channel_id, author_id)
+
         system = (
-            "You are Evergreen MILCOM in Discord — talk like a real alliance member, not a helpdesk bot. "
-            "Short, casual, direct. Light banter OK. "
-            "When Live game data is provided, treat it as ground truth and answer with those numbers. "
-            "You can discuss any nation or alliance in Politics & War using live data — not only Evergreen. "
-            "If live data is missing, say so briefly; do not invent stats. "
-            "Never mention AI, models, or providers. Never reveal secrets or API keys."
+            "You are Evergreen MILCOM leadership on Discord — a real gov tactician, not a tutorial bot. "
+            "Short, sharp, decisive. Talk like alliance milcom in a war room. "
+            "When WAR ROOM / Live data is present, it is ground truth — use those numbers. "
+            "If asked whether to airstrike/ground/naval: answer YES or NO first, then one reason, "
+            "and name the exact attack subtype (e.g. airstrike aircraft, airstrike tanks, "
+            "airstrike ships, airstrike soldiers, airstrike infra, airstrike money, "
+            "ground battle, naval ships). "
+            "Respect MAP: need 3 ground, 4 air/naval. If MAP too low, say wait. "
+            "Priority usually: air superiority (airstrike aircraft) → blockade (naval) → "
+            "strip military with ground; if AS already held, prefer ground over re-dogfighting. "
+            "Never invent MAP, units, or controls. Never mention AI/models/providers."
         )
-        user = f"Alliance knowledge:\n{knowledge}\n\nLive game data:\n{live or '(none requested)'}\n\nMember {author} asks:\n{question}"
+        user = (
+            f"Alliance knowledge:\n{knowledge}\n\n"
+            f"Live game data:\n{live or '(none)'}\n\n"
+            f"War room tactical context:\n{war_ctx or '(not a war room / no data)'}\n\n"
+            f"Member {author} says:\n{question}"
+        )
         session = self.bot.http_session
         reply = await llm_generate(session, system, user)
         if len(reply) > MAX_REPLY_CHARS:
@@ -440,7 +610,11 @@ class AI(commands.Cog):
             content = "Help me with this."
 
         async with message.channel.typing():
-            answer = await self._answer(message.guild.id, content, str(message.author))
+            answer = await self._answer(
+                message.guild.id, content, str(message.author),
+                channel_id=message.channel.id,
+                author_id=message.author.id,
+            )
         await message.reply(answer, mention_author=False)
 
     async def _ingest_knowledge(self, message: discord.Message):
