@@ -3,6 +3,7 @@ Thin wrapper around the Politics & War v3 GraphQL API.
 """
 
 import os
+import asyncio
 import aiohttp
 
 PW_API_URL = "https://api.politicsandwar.com/graphql"
@@ -20,11 +21,26 @@ class PWApiClient:
     async def _query(self, query: str, variables: dict | None = None) -> dict:
         url = f"{PW_API_URL}?api_key={self._api_key}"
         payload = {"query": query, "variables": variables or {}}
-        async with self._session.post(url, json=payload) as resp:
-            data = await resp.json()
-            if "errors" in data:
-                raise PWApiError(str(data["errors"]))
-            return data["data"]
+        last_err = None
+        for attempt in range(5):
+            async with self._session.post(url, json=payload) as resp:
+                data = await resp.json()
+            errs = data.get("errors") or []
+            if not errs:
+                return data["data"]
+            msg = str(errs)
+            last_err = msg
+            rate = (
+                "rate limit" in msg.lower()
+                or "rate limited" in msg.lower()
+                or "too many" in msg.lower()
+            )
+            if rate and attempt < 4:
+                wait = 2 ** attempt  # 1, 2, 4, 8s
+                await asyncio.sleep(wait)
+                continue
+            raise PWApiError(msg)
+        raise PWApiError(last_err or "PW API failed")
 
     async def get_nation(self, nation_id: int) -> dict | None:
         # Lighter query so /whois works again
@@ -42,6 +58,7 @@ class PWApiClient:
               alliance { id name }
               cities {
                 id
+                date
                 name
                 infrastructure
                 land
@@ -65,6 +82,7 @@ class PWApiClient:
                 stadium
                 subway
                 hospital
+                recyclingcenter
               }
               soldiers
               tanks

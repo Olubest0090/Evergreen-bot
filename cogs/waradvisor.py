@@ -196,8 +196,14 @@ class WarAdvisor(commands.Cog):
                         pass
         except Exception as e:
             log.exception("waradvice failed")
+            err = str(e)
+            if "rate limit" in err.lower() or "rate limited" in err.lower():
+                err = (
+                    "Politics & War API is rate-limiting us right now. "
+                    "Wait \~30–60s and run /waradvice again."
+                )
             await interaction.followup.send(
-                embed=embeds.error("War advice failed", str(e)[:400])
+                embed=embeds.error("War advice failed", err[:400])
             )
 
 
