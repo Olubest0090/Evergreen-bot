@@ -52,6 +52,7 @@ def expected_victory(att_v: float, def_v: float, trials: int = 400) -> dict:
         "mod_pct": counts[2] / total * 100,
         "pyr_pct": counts[1] / total * 100,
         "fail_pct": counts[0] / total * 100,
+        "win_pct": (counts[1] + counts[2] + counts[3]) / total * 100,
         "avg_victory": avg,
         "likely": Victory(max(range(4), key=lambda i: counts[i])),
     }
@@ -174,51 +175,63 @@ class ControlState:
     blockade_def: bool = False
 
 
-def infer_controls_from_attacks(attacks: list[dict], att_nation_id: int) -> ControlState:
-    """Walk attacks chronologically; Immense air/ground/naval sets control."""
+def infer_controls_from_attacks(attacks: list[dict], our_nation_id: int) -> ControlState:
+    """Walk attacks in order. our_nation_id = nation we are advising for.
+
+    Success: 0 fail, 1 pyrrhic, 2 moderate, 3 immense (GraphQL).
+    Actor = who launched the attack (att_id), fallback victor.
+    """
     st = ControlState()
+    our_id = int(our_nation_id)
     ordered = sorted(attacks or [], key=lambda a: a.get("date") or "")
     for a in ordered:
-        t = (a.get("type") or "").upper()
-        success = a.get("success")
-        # success: 3 = immense in many API dumps; also check string
-        is_immense = success == 3 or str(success).upper() in ("3", "IMMENSE", "IMMENSE_TRIUMPH")
-        is_win = is_immense or success in (1, 2, 3) or str(success) in ("1", "2", "3")
-        actor = a.get("att_id") or a.get("victor")
-        we_attacked = actor == att_nation_id
+        t = (a.get("type") or "").upper().replace(" ", "_")
+        try:
+            success = int(a.get("success") if a.get("success") is not None else -1)
+        except (TypeError, ValueError):
+            success = -1
+        is_immense = success == 3
+        is_win = success in (1, 2, 3)
 
-        if "AIR" in t or "DOGFIGHT" in t or "AIRSTRIKE" in t:
-            if is_immense and we_attacked:
-                st.air_sup_att = True
+        actor_raw = a.get("att_id")
+        if actor_raw is None:
+            actor_raw = a.get("victor")
+        try:
+            actor = int(actor_raw) if actor_raw is not None else 0
+        except (TypeError, ValueError):
+            actor = 0
+        we = actor == our_id
+
+        is_air = any(x in t for x in ("AIR", "DOGFIGHT", "AIRSTRIKE"))
+        is_ground = "GROUND" in t and "NAVAL" not in t
+        is_naval = "NAVAL" in t or t == "NAVY"
+
+        if is_air:
+            if is_immense and we:
+                st.air_sup_att, st.air_sup_def = True, False
+            elif is_immense and not we:
+                st.air_sup_def, st.air_sup_att = True, False
+            elif is_win and we:
                 st.air_sup_def = False
-            elif is_immense and not we_attacked:
-                st.air_sup_def = True
+            elif is_win and not we:
                 st.air_sup_att = False
-            elif is_win and we_attacked:
-                st.air_sup_def = False  # break their AS
-            elif is_win and not we_attacked:
-                st.air_sup_att = False
-        elif t == "GROUND" or "GROUND" in t:
-            if is_immense and we_attacked:
-                st.ground_ctrl_att = True
+        elif is_ground:
+            if is_immense and we:
+                st.ground_ctrl_att, st.ground_ctrl_def = True, False
+            elif is_immense and not we:
+                st.ground_ctrl_def, st.ground_ctrl_att = True, False
+            elif is_win and we:
                 st.ground_ctrl_def = False
-            elif is_immense and not we_attacked:
-                st.ground_ctrl_def = True
+            elif is_win and not we:
                 st.ground_ctrl_att = False
-            elif is_win and we_attacked:
-                st.ground_ctrl_def = False
-            elif is_win and not we_attacked:
-                st.ground_ctrl_att = False
-        elif "NAVAL" in t:
-            if is_immense and we_attacked:
-                st.blockade_att = True
+        elif is_naval:
+            if is_immense and we:
+                st.blockade_att, st.blockade_def = True, False
+            elif is_immense and not we:
+                st.blockade_def, st.blockade_att = True, False
+            elif is_win and we:
                 st.blockade_def = False
-            elif is_immense and not we_attacked:
-                st.blockade_def = True
-                st.blockade_att = False
-            elif is_win and we_attacked:
-                st.blockade_def = False
-            elif is_win and not we_attacked:
+            elif is_win and not we:
                 st.blockade_att = False
     return st
 
@@ -243,7 +256,7 @@ def advice_for_war(
         def_has_air_sup=controls.air_sup_def,
     )
 
-    tips.append(f"MAP {our_map}/12 · enemy {enemy_map}/12 · Res {our_res}% · enemy {enemy_res}%")
+    tips.append(f"MAP {our_map}/12 · enemy {enemy_map}/12 · Res {our_res} · enemy {enemy_res}")
 
     bits = []
     if controls.air_sup_att:
@@ -261,56 +274,56 @@ def advice_for_war(
     tips.append("Status: " + (", ".join(bits) if bits else "no space control yet"))
 
     tips.append(
-        f"Enemy mil: {enemy.soldiers:,}S · {enemy.tanks:,}T · "
-        f"{enemy.aircraft:,} planes · {enemy.ships:,} ships"
+        f"Enemy: {enemy.soldiers:,}S · {enemy.tanks:,}T · {enemy.aircraft:,} planes · {enemy.ships:,} ships"
     )
     tips.append(
-        f"Your mil: {our.soldiers:,}S · {our.tanks:,}T · "
-        f"{our.aircraft:,} planes · {our.ships:,} ships"
+        f"You: {our.soldiers:,}S · {our.tanks:,}T · {our.aircraft:,} planes · {our.ships:,} ships"
     )
 
-    # Priority actions
     if controls.air_sup_def:
         tips.append(
-            f"**Break their air superiority** — any airstrike win. "
-            f"Planes {our.aircraft:,} vs {enemy.aircraft:,} (\~{air['immense_pct']:.0f}% IT) · 4 MAP"
+            f"**Break their air superiority** (any airstrike win). "
+            f"{our.aircraft:,} vs {enemy.aircraft:,} planes · "
+            f"\~{air['win_pct']:.0f}% any win / \~{air['immense_pct']:.0f}% IT · 4 MAP"
         )
     elif not controls.air_sup_att and enemy.aircraft > 0:
         tips.append(
-            f"**Take air superiority** — airstrike IT. "
-            f"Planes {our.aircraft:,} vs {enemy.aircraft:,} (\~{air['immense_pct']:.0f}% IT) · 4 MAP"
+            f"**Take air superiority** (airstrike IT). "
+            f"{our.aircraft:,} vs {enemy.aircraft:,} · "
+            f"\~{air['immense_pct']:.0f}% IT · 4 MAP"
         )
     elif controls.air_sup_att:
-        tips.append("Air superiority is yours — enemy tanks fight at half. Ground hard.")
+        tips.append("You hold air superiority — their tanks fight at half. Prefer ground.")
     else:
-        tips.append("No enemy planes left — skip air.")
+        tips.append("No enemy planes — skip air.")
 
     if controls.blockade_def:
         tips.append(
-            "**Break blockade** — any naval win vs them, zero their ships, "
+            "**Break blockade:** any naval win vs them, zero their ships, "
             "or a partner at war with them lands naval IT."
         )
     if not controls.blockade_att and enemy.ships > 0:
         tips.append(
-            f"**Blockade** — naval IT. Ships {our.ships:,} vs {enemy.ships:,} "
-            f"(\~{nav['immense_pct']:.0f}% IT) · 4 MAP. Also frees allies they blockaded."
+            f"**Blockade** needs naval IT. {our.ships:,} vs {enemy.ships:,} ships · "
+            f"\~{nav['win_pct']:.0f}% any win / \~{nav['immense_pct']:.0f}% IT · 4 MAP"
         )
     elif controls.blockade_att:
-        tips.append("Blockade is up — they can't bank or trade.")
+        tips.append("You blockade them.")
     elif enemy.ships <= 0:
-        tips.append("Enemy has no ships — blockade not needed.")
+        tips.append("Enemy has no ships.")
 
     tips.append(
-        f"**Ground** — strip soldiers/tanks. "
-        f"(\~{gnd['immense_pct']:.0f}% IT) · 3 MAP"
-        + (" · GC chips their planes on wins" if controls.ground_ctrl_att else "")
+        f"**Ground** {our.soldiers:,}S/{our.tanks:,}T vs {enemy.soldiers:,}S/{enemy.tanks:,}T · "
+        f"\~{gnd['win_pct']:.0f}% any win / \~{gnd['immense_pct']:.0f}% IT · 3 MAP"
+        + (" · you have GC (grounds chip planes)" if controls.ground_ctrl_att else "")
+        + (" · enemy has GC" if controls.ground_ctrl_def else "")
     )
 
     if our_map < 3:
-        tips.append("Not enough MAP — wait for the next turn.")
-    elif our_map >= 4 and not controls.air_sup_att and enemy.aircraft > 0:
-        tips.append("You have MAP for air this cycle if IT looks good.")
-    elif our_map >= 3:
-        tips.append("You have MAP for ground this cycle.")
+        tips.append(f"MAP {our_map} — need 3 for ground, 4 for air/naval. Wait a turn.")
+    elif our_map < 4 and not controls.air_sup_att and enemy.aircraft > 0:
+        tips.append(f"MAP {our_map} — enough for ground, not air yet.")
+    else:
+        tips.append(f"MAP {our_map} — you can attack this cycle.")
 
     return tips

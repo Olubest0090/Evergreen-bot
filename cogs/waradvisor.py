@@ -152,14 +152,6 @@ class WarAdvisor(commands.Cog):
                 except Exception as e:
                     log.warning("war attacks failed: %s", e)
 
-                # naval_blockade flag from nation war list if present
-                for w in (att_n.get("offensive_wars") or []) + (att_n.get("defensive_wars") or []):
-                    if int(w.get("id") or 0) == int(war.get("id") or -1):
-                        if w.get("naval_blockade"):
-                            # API flag: who is blockaded is ambiguous; if we are attacker and true, often enemy is blockaded
-                            controls.blockade_att = True
-                        break
-
             tips = advice_for_war(
                 our=_force(att_n),
                 enemy=_force(def_n),
@@ -187,9 +179,9 @@ class WarAdvisor(commands.Cog):
             emb.add_field(
                 name="Odds",
                 value=(
-                    f"Air \~{air['immense_pct']:.0f}% IT\n"
-                    f"Ground \~{gnd['immense_pct']:.0f}% IT\n"
-                    f"Naval \~{nav['immense_pct']:.0f}% IT"
+                    f"Air \~{air['win_pct']:.0f}% win / \~{air['immense_pct']:.0f}% IT\n"
+                    f"Ground \~{gnd['win_pct']:.0f}% win / \~{gnd['immense_pct']:.0f}% IT\n"
+                    f"Naval \~{nav['win_pct']:.0f}% win / \~{nav['immense_pct']:.0f}% IT"
                 ),
                 inline=True,
             )
