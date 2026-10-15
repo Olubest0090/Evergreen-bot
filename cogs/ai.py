@@ -579,6 +579,7 @@ class AI(commands.Cog):
             reply = reply[: MAX_REPLY_CHARS - 20] + "\n…(truncated)"
         return reply
 
+    @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot or not message.guild:
             return
