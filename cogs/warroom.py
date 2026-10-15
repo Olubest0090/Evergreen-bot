@@ -639,7 +639,10 @@ class WarRoom(commands.Cog):
                 continue
             for _, _, attack in batch:
                 await database.mark_attack_seen(guild_id, int(attack["id"]))
-            # Re-issue stack orders so members know what to do next
+            try:
+                await _check_order_violations(self.bot, guild_id, channel, enemy_id, batch)
+            except Exception as e:
+                print(f"[warroom] violation check: {e}")
             try:
                 await post_stack_advice_for_room(self.bot, guild_id, channel, enemy_id)
             except Exception as e:
@@ -679,10 +682,105 @@ async def post_stack_advice_for_room(bot, guild_id: int, channel: discord.TextCh
         objective = (room or {}).get("objective") or OBJ_AIR_BLOCKADE_GROUND
         body = _stack_orders(fighters, enemy, objective)
         if len(body) > 1900:
-            body = body[:1900] + "\n…"
-        await channel.send("**Updated orders** (after latest attack)\n" + body)
+            body = body[:1900] + "
+…"
+
+        # Parse rough assignments from order text for compliance checks
+        assignments = {}
+        low = body.lower()
+        for f in fighters:
+            name = (f.get("name") or "").lower()
+            nid = str(f.get("id"))
+            if not name:
+                continue
+            # who was told to naval / air / ground / hold
+            action = "hold"
+            for line in body.splitlines():
+                if name in line.lower():
+                    ll = line.lower()
+                    if "naval" in ll and "no naval" not in ll and "not naval" not in ll:
+                        action = "naval"
+                    elif "airstrike" in ll or "aircraft" in ll and "dogfight" in ll:
+                        action = "air"
+                    elif "ground now" in ll or ("**ground**" in ll and "hold" not in ll):
+                        action = "ground"
+                    elif "hold" in ll or "wait" in ll or "bank" in ll or "no naval" in ll:
+                        action = "hold"
+            assignments[nid] = {"name": f.get("name"), "action": action}
+
+        try:
+            await database.set_war_room_orders(guild_id, int(enemy_id), body, assignments)
+        except Exception as e:
+            print(f"[warroom] save orders: {e}")
+
+        await channel.send("**Updated orders** (after latest attack)
+" + body)
     except Exception as e:
         print(f"[warroom] post_stack_advice failed: {e}")
+
+
+async def _check_order_violations(bot, guild_id, channel, enemy_id, batch):
+    """If someone attacks against standing orders, ping them for an explanation."""
+    try:
+        data = await database.get_war_room_orders(guild_id, int(enemy_id))
+    except Exception:
+        return
+    assign = (data or {}).get("assignments") or {}
+    if not assign:
+        return
+
+    for when, war, attack in batch:
+        atype = (attack.get("type") or "").upper()
+        actor_id = str(attack.get("att_id") or attack.get("victor") or "")
+        if not actor_id or actor_id not in assign:
+            continue
+        expected = (assign[actor_id].get("action") or "hold").lower()
+        name = assign[actor_id].get("name") or actor_id
+
+        did = "other"
+        if "GROUND" in atype:
+            did = "ground"
+        elif "NAVAL" in atype:
+            did = "naval"
+        elif "AIR" in atype:
+            did = "air"
+
+        # Violation: ordered hold/naval/air but did ground early, etc.
+        violated = False
+        if expected == "hold" and did in ("ground", "naval", "air"):
+            violated = True
+        elif expected == "naval" and did == "ground":
+            violated = True
+        elif expected == "air" and did == "ground":
+            violated = True
+        elif expected == "hold" and did != "other":
+            violated = True
+
+        if not violated:
+            continue
+
+        # ping linked discord user if possible
+        mention = name
+        try:
+            disc = await database.get_discord_id_for_nation(int(actor_id))
+            if disc:
+                mention = f"<@{disc}>"
+        except Exception:
+            pass
+
+        orders_snip = ((data.get("text") or "")[:400]).strip()
+        msg = (
+            f"{mention} — you **{did}** but standing orders said **{expected}**.
+"
+            f"Explain why (reply here). If the reason is weak I'll re-issue orders.
+"
+            f"_Last orders:_
+{orders_snip}"
+        )
+        try:
+            await channel.send(msg[:1900])
+        except Exception as e:
+            print(f"[warroom] violation ping failed: {e}")
 
 
 

@@ -363,16 +363,6 @@ async def _live_pw_context(bot, guild_id: int, question: str) -> str:
     return "\n\n".join(bits)
 
 
-class AI(commands.Cog):
-    def __init__(self, bot: commands.Bot):
-        self.bot = bot
-        log.warning(
-            "[ai] AI cog loaded provider=%s groq_model=%s",
-            os.environ.get("AI_PROVIDER", "groq"),
-            os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant"),
-        )
-
-
 async def _war_room_tactical_context(bot, channel_id: int, author_id: int) -> str:
     """Live war-room brief: enemy, linked nation, MAP, controls, specific attack tips."""
     try:
@@ -516,6 +506,18 @@ async def _war_room_tactical_context(bot, channel_id: int, author_id: int) -> st
     return "\n".join(lines)
 
 
+
+
+class AI(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        log.warning(
+            "[ai] AI cog loaded provider=%s groq_model=%s",
+            os.environ.get("AI_PROVIDER", "groq"),
+            os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant"),
+        )
+
+
     async def _knowledge_context(self, guild_id: int) -> str:
         try:
             rows = await database.list_ai_knowledge(guild_id, limit=40)
@@ -577,7 +579,6 @@ async def _war_room_tactical_context(bot, channel_id: int, author_id: int) -> st
             reply = reply[: MAX_REPLY_CHARS - 20] + "\n…(truncated)"
         return reply
 
-    @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot or not message.guild:
             return
@@ -651,7 +652,6 @@ async def _war_room_tactical_context(bot, channel_id: int, author_id: int) -> st
             except Exception as e2:
                 log.warning("channel.send failed: %s", e2)
 
-
     async def _ingest_knowledge(self, message: discord.Message):
         session = self.bot.http_session
         parts = []
@@ -686,10 +686,6 @@ async def _war_room_tactical_context(bot, channel_id: int, author_id: int) -> st
                 await message.add_reaction("⚠️")
             except discord.HTTPException:
                 pass
-
-
-
-
 
     async def _handle_spy_desk(self, message: discord.Message):
         report = parse_spy_message(message.content or "")
@@ -773,7 +769,6 @@ async def _war_room_tactical_context(bot, channel_id: int, author_id: int) -> st
             await message.reply(body, mention_author=False)
         except discord.HTTPException as e:
             log.warning("[spy] reply failed: %s", e)
-
 
 
 async def setup(bot: commands.Bot):

@@ -386,6 +386,42 @@ async def get_war_room_objective(guild_id: int, enemy_nation_id: int) -> str | N
     return room.get("objective") or None
 
 
+
+async def set_war_room_orders(guild_id: int, enemy_nation_id: int, orders_text: str, assignments: dict | None = None) -> None:
+    """Store last MILCOM orders for this room (text + optional {nation_id: action})."""
+    import json
+    url = f"{_base_url}/rest/v1/war_rooms"
+    params = {"guild_id": f"eq.{guild_id}", "enemy_nation_id": f"eq.{enemy_nation_id}"}
+    payload = {
+        "last_orders": orders_text[:8000],
+        "order_assignments": json.dumps(assignments or {}),
+    }
+    async with _session.patch(url, params=params, json=payload) as resp:
+        if resp.status not in (200, 204):
+            # column may not exist yet — don't crash attack feed
+            print(f"[db] set_war_room_orders {resp.status}: {await resp.text()}")
+
+
+async def get_war_room_orders(guild_id: int, enemy_nation_id: int) -> dict:
+    room = await get_war_room(guild_id, enemy_nation_id)
+    if not room:
+        return {}
+    import json
+    raw = room.get("order_assignments") or "{}"
+    if isinstance(raw, str):
+        try:
+            assign = json.loads(raw)
+        except Exception:
+            assign = {}
+    else:
+        assign = raw or {}
+    return {
+        "text": room.get("last_orders") or "",
+        "assignments": assign,
+        "objective": room.get("objective"),
+    }
+
+
 async def delete_war_room(guild_id: int, enemy_nation_id: int) -> None:
     url = f"{_base_url}/rest/v1/war_rooms"
     params = {"guild_id": f"eq.{guild_id}", "enemy_nation_id": f"eq.{enemy_nation_id}"}
