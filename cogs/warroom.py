@@ -682,25 +682,21 @@ async def post_stack_advice_for_room(bot, guild_id: int, channel: discord.TextCh
         objective = (room or {}).get("objective") or OBJ_AIR_BLOCKADE_GROUND
         body = _stack_orders(fighters, enemy, objective)
         if len(body) > 1900:
-            body = body[:1900] + "
-…"
+            body = body[:1900] + "\n…"
 
-        # Parse rough assignments from order text for compliance checks
         assignments = {}
-        low = body.lower()
         for f in fighters:
             name = (f.get("name") or "").lower()
             nid = str(f.get("id"))
             if not name:
                 continue
-            # who was told to naval / air / ground / hold
             action = "hold"
             for line in body.splitlines():
                 if name in line.lower():
                     ll = line.lower()
                     if "naval" in ll and "no naval" not in ll and "not naval" not in ll:
                         action = "naval"
-                    elif "airstrike" in ll or "aircraft" in ll and "dogfight" in ll:
+                    elif "airstrike" in ll or ("aircraft" in ll and "dogfight" in ll):
                         action = "air"
                     elif "ground now" in ll or ("**ground**" in ll and "hold" not in ll):
                         action = "ground"
@@ -713,8 +709,7 @@ async def post_stack_advice_for_room(bot, guild_id: int, channel: discord.TextCh
         except Exception as e:
             print(f"[warroom] save orders: {e}")
 
-        await channel.send("**Updated orders** (after latest attack)
-" + body)
+        await channel.send("**Updated orders** (after latest attack)\n" + body)
     except Exception as e:
         print(f"[warroom] post_stack_advice failed: {e}")
 
@@ -745,7 +740,6 @@ async def _check_order_violations(bot, guild_id, channel, enemy_id, batch):
         elif "AIR" in atype:
             did = "air"
 
-        # Violation: ordered hold/naval/air but did ground early, etc.
         violated = False
         if expected == "hold" and did in ("ground", "naval", "air"):
             violated = True
@@ -753,13 +747,10 @@ async def _check_order_violations(bot, guild_id, channel, enemy_id, batch):
             violated = True
         elif expected == "air" and did == "ground":
             violated = True
-        elif expected == "hold" and did != "other":
-            violated = True
 
         if not violated:
             continue
 
-        # ping linked discord user if possible
         mention = name
         try:
             disc = await database.get_discord_id_for_nation(int(actor_id))
@@ -770,18 +761,14 @@ async def _check_order_violations(bot, guild_id, channel, enemy_id, batch):
 
         orders_snip = ((data.get("text") or "")[:400]).strip()
         msg = (
-            f"{mention} — you **{did}** but standing orders said **{expected}**.
-"
-            f"Explain why (reply here). If the reason is weak I'll re-issue orders.
-"
-            f"_Last orders:_
-{orders_snip}"
+            f"{mention} — you **{did}** but standing orders said **{expected}**.\n"
+            f"Explain why (reply here). If the reason is weak I will re-issue orders.\n"
+            f"_Last orders:_\n{orders_snip}"
         )
         try:
             await channel.send(msg[:1900])
         except Exception as e:
             print(f"[warroom] violation ping failed: {e}")
-
 
 
 async def setup(bot: commands.Bot):
