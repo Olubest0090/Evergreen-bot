@@ -230,19 +230,40 @@ def build_attack_embed(war: dict, attack: dict, when) -> discord.Embed:
                 loot_info = loot_info[:500] + "…"
             lines.append(f"**Loot/details:** {loot_info}")
 
-        # Casualties if API provides
-        cas = []
-        for key, label_c in (
-            ("soldiers_killed", "soldiers"),
-            ("tanks_killed", "tanks"),
-            ("aircraft_killed", "aircraft"),
-            ("ships_killed", "ships"),
-        ):
-            v = attack.get(key)
-            if v:
-                cas.append(f"{int(v):,} {label_c}")
-        if cas:
-            lines.append("**Units hit:** " + ", ".join(cas))
+        # Military lost (GraphQL attcas1/2, defcas1/2 — meaning depends on type)
+        atype = attack_type
+        a1 = int(attack.get("attcas1") or 0)
+        a2 = int(attack.get("attcas2") or 0)
+        d1 = int(attack.get("defcas1") or 0)
+        d2 = int(attack.get("defcas2") or 0)
+        our_loss, their_loss = [], []
+        if atype == "GROUND":
+            if a1: our_loss.append(f"{a1:,} soldiers")
+            if a2: our_loss.append(f"{a2:,} tanks")
+            if d1: their_loss.append(f"{d1:,} soldiers")
+            if d2: their_loss.append(f"{d2:,} tanks")
+        elif atype.startswith("AIR"):
+            if a1: our_loss.append(f"{a1:,} aircraft")
+            if d1: their_loss.append(f"{d1:,} aircraft")
+            # second def cas = targeted unit for non-dogfight
+            if atype == "AIRVTANKS" and d2:
+                their_loss.append(f"{d2:,} tanks")
+            elif atype == "AIRVSOLDIERS" and d2:
+                their_loss.append(f"{d2:,} soldiers")
+            elif atype == "AIRVSHIPS" and d2:
+                their_loss.append(f"{d2:,} ships")
+        elif atype.startswith("NAVAL"):
+            if a1: our_loss.append(f"{a1:,} ships")
+            if d1: their_loss.append(f"{d1:,} ships")
+        else:
+            if a1 or a2:
+                our_loss.append(f"cas {a1}/{a2}")
+            if d1 or d2:
+                their_loss.append(f"cas {d1}/{d2}")
+        if our_loss:
+            lines.append("**We lost:** " + ", ".join(our_loss))
+        if their_loss:
+            lines.append("**They lost:** " + ", ".join(their_loss))
 
         infra = attack.get("infradestroyed") or 0
         if infra:
@@ -620,8 +641,13 @@ class WarRoom(commands.Cog):
                         when = datetime.fromisoformat(attack["date"].replace("Z", "+00:00"))
                     except Exception:
                         continue
-                    if when < cutoff:
+                    if when < cutoff and (attack.get("type") or "").upper() not in LOOT_ATTACKS:
                         continue
+                    # Victory / AllianceLoot: allow up to 48h so we don't miss war-end posts
+                    if (attack.get("type") or "").upper() in LOOT_ATTACKS:
+                        from datetime import timedelta as _td
+                        if when < datetime.now(timezone.utc) - _td(hours=48):
+                            continue
                     if await database.is_attack_seen(guild_id, int(attack["id"])):
                         continue
                     fresh.append((when, war_obj or {"id": war_id, "attacker": {}, "defender": {}, "_side": "defense"}, attack))
@@ -715,60 +741,9 @@ async def post_stack_advice_for_room(bot, guild_id: int, channel: discord.TextCh
 
 
 async def _check_order_violations(bot, guild_id, channel, enemy_id, batch):
-    """If someone attacks against standing orders, ping them for an explanation."""
-    try:
-        data = await database.get_war_room_orders(guild_id, int(enemy_id))
-    except Exception:
-        return
-    assign = (data or {}).get("assignments") or {}
-    if not assign:
-        return
+    """Disabled — no compliance pings."""
+    return
 
-    for when, war, attack in batch:
-        atype = (attack.get("type") or "").upper()
-        actor_id = str(attack.get("att_id") or attack.get("victor") or "")
-        if not actor_id or actor_id not in assign:
-            continue
-        expected = (assign[actor_id].get("action") or "hold").lower()
-        name = assign[actor_id].get("name") or actor_id
-
-        did = "other"
-        if "GROUND" in atype:
-            did = "ground"
-        elif "NAVAL" in atype:
-            did = "naval"
-        elif "AIR" in atype:
-            did = "air"
-
-        violated = False
-        if expected == "hold" and did in ("ground", "naval", "air"):
-            violated = True
-        elif expected == "naval" and did == "ground":
-            violated = True
-        elif expected == "air" and did == "ground":
-            violated = True
-
-        if not violated:
-            continue
-
-        mention = name
-        try:
-            disc = await database.get_discord_id_for_nation(int(actor_id))
-            if disc:
-                mention = f"<@{disc}>"
-        except Exception:
-            pass
-
-        orders_snip = ((data.get("text") or "")[:400]).strip()
-        msg = (
-            f"{mention} — you **{did}** but standing orders said **{expected}**.\n"
-            f"Explain why (reply here). If the reason is weak I will re-issue orders.\n"
-            f"_Last orders:_\n{orders_snip}"
-        )
-        try:
-            await channel.send(msg[:1900])
-        except Exception as e:
-            print(f"[warroom] violation ping failed: {e}")
 
 
 async def setup(bot: commands.Bot):
