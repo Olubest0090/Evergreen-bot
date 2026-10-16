@@ -399,6 +399,61 @@ class WarRoom(commands.Cog):
             pass
         await database.set_pin_message(interaction.guild_id, room["enemy_nation_id"], msg.id)
 
+
+    @warroom_group.command(
+        name="delete",
+        description="Delete this war room now, or after planning hours",
+    )
+    @app_commands.describe(
+        planning="Hours to wait before delete (0 = now). Example: 2 = delete in 2 hours",
+    )
+    async def warroom_delete(self, interaction: discord.Interaction, planning: float = 0.0):
+        from datetime import datetime, timezone, timedelta
+
+        room = await database.get_war_room_by_channel(interaction.channel_id)
+        if not room:
+            return await interaction.response.send_message(
+                "Use this **inside** a war room channel.", ephemeral=True
+            )
+
+        guild_id = interaction.guild_id
+        enemy_id = int(room["enemy_nation_id"])
+        channel = interaction.channel
+        hours = max(0.0, float(planning))
+
+        if hours <= 0:
+            await interaction.response.send_message("Deleting this war room now…")
+            try:
+                await database.delete_war_room(guild_id, enemy_id)
+            except Exception as e:
+                print(f"[warroom] db delete: {e}")
+            try:
+                await channel.delete(reason=f"Manual /warroom delete by {interaction.user}")
+            except discord.HTTPException as e:
+                await interaction.followup.send(f"Channel delete failed: {e}")
+            return
+
+        delete_at = datetime.now(timezone.utc) + timedelta(hours=hours)
+        iso = delete_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+        try:
+            await database.schedule_war_room_delete(guild_id, enemy_id, iso)
+        except Exception as e:
+            return await interaction.response.send_message(
+                f"Could not schedule (add column delete_at?): {e}", ephemeral=True
+            )
+
+        # in-memory backup if DB column missing
+        if not hasattr(self, "_scheduled_deletes"):
+            self._scheduled_deletes = {}
+        self._scheduled_deletes[(guild_id, enemy_id)] = delete_at
+
+        await interaction.response.send_message(
+            f"War room scheduled for delete in **{hours:g}h** "
+            f"(<t:{int(delete_at.timestamp())}:R>). "
+            f"Run `/warroom delete planning:0` to delete now."
+        )
+
+
     @admin_group.command(name="syncwarrooms", description="Force-sync war rooms now")
     async def sync_warrooms(self, interaction: discord.Interaction):
         await interaction.response.defer()
@@ -502,44 +557,10 @@ class WarRoom(commands.Cog):
                 if discord_id:
                     await self._grant_access(channel, discord_id)
 
-        # Grace period: an enemy must be missing for 3 CONSECUTIVE
-        # sync cycles (~6 min) before we close its room (\~1 hour). A single
-        # missing cycle is treated as likely API flakiness/lag rather
-        # than the war actually ending, to stop rooms from flapping
-        # closed-then-recreated on a transient data hiccup.
-        MISSING_THRESHOLD = 30  # \~1 hour (30 × 120s)
+        # Auto-delete DISABLED — use /warroom delete planning:<hours>
         closed = 0
-        existing_rooms = await database.get_all_war_rooms(guild_id)
-        
-        # Force all active enemy IDs to int for safe lookups
-        active_enemy_ids = {int(eid) for eid in by_enemy.keys()}
-
-        for room in existing_rooms:
-            enemy_id = int(room["enemy_nation_id"])
-            
-            # If enemy is actively fighting, reset missing count in Supabase
-            if enemy_id in active_enemy_ids:
-                if room.get("missing_count", 0) > 0:
-                    await database.update_war_room_missing_count(guild_id, enemy_id, 0)
-                continue
-
-            # Enemy missing: increment persistent count
-            current_missing = room.get("missing_count", 0) + 1
-            if current_missing < MISSING_THRESHOLD:
-                await database.update_war_room_missing_count(guild_id, enemy_id, current_missing)
-                continue
-
-            # Grace period expired (3 consecutive fails stored in DB) — safely close room
-            channel = guild.get_channel(int(room["channel_id"]))
-            if channel:
-                try:
-                    await channel.delete(reason="War ended: missing for \~1 hour")
-                except discord.HTTPException:
-                    pass
-            await database.delete_war_room(guild_id, enemy_id)
-            closed += 1
-
         return created, closed
+
 
     @tasks.loop(seconds=ATTACK_TRACK_INTERVAL_SECONDS)
     async def warroom_loop(self):
@@ -556,6 +577,10 @@ class WarRoom(commands.Cog):
 
                 try:
                     await self._track_attacks_for_guild(config["guild_id"], guild, config.get("alliance_id"))
+                try:
+                    await self._process_scheduled_deletes(guild)
+                except Exception as e:
+                    print(f"[warroom] scheduled delete: {e}")
                 except Exception as e:
                     print(f"[warroom] attack tracking error: {e}")
         except Exception as e:
@@ -564,6 +589,50 @@ class WarRoom(commands.Cog):
     @warroom_loop.before_loop
     async def before_loop(self):
         await self.bot.wait_until_ready()
+
+
+    async def _process_scheduled_deletes(self, guild: discord.Guild) -> None:
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        # DB-due rows
+        try:
+            due = await database.list_war_rooms_due_delete()
+        except Exception:
+            due = []
+        due = [r for r in due if int(r.get("guild_id") or 0) == guild.id]
+
+        # in-memory backup
+        mem = getattr(self, "_scheduled_deletes", {})
+        for (gid, eid), when in list(mem.items()):
+            if gid != guild.id:
+                continue
+            if when <= now:
+                due.append({"guild_id": gid, "enemy_nation_id": eid,
+                            "channel_id": None})
+
+        seen = set()
+        for room in due:
+            eid = int(room["enemy_nation_id"])
+            if eid in seen:
+                continue
+            seen.add(eid)
+            full = room
+            if not room.get("channel_id"):
+                full = await database.get_war_room(guild.id, eid) or room
+            ch_id = full.get("channel_id")
+            ch = guild.get_channel(int(ch_id)) if ch_id else None
+            if ch:
+                try:
+                    await ch.delete(reason="Scheduled /warroom delete")
+                except discord.HTTPException:
+                    pass
+            try:
+                await database.delete_war_room(guild.id, eid)
+            except Exception as e:
+                print(f"[warroom] scheduled db delete: {e}")
+            if hasattr(self, "_scheduled_deletes"):
+                self._scheduled_deletes.pop((guild.id, eid), None)
+
 
     async def _track_attacks_for_guild(self, guild_id: int, guild: discord.Guild, alliance_id: int | None):
         from datetime import datetime, timezone, timedelta

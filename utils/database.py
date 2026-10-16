@@ -422,6 +422,29 @@ async def get_war_room_orders(guild_id: int, enemy_nation_id: int) -> dict:
     }
 
 
+
+async def schedule_war_room_delete(guild_id: int, enemy_nation_id: int, delete_at_iso: str | None) -> None:
+    """Set or clear scheduled channel delete (ISO UTC). None clears."""
+    url = f"{_base_url}/rest/v1/war_rooms"
+    params = {"guild_id": f"eq.{guild_id}", "enemy_nation_id": f"eq.{enemy_nation_id}"}
+    payload = {"delete_at": delete_at_iso}
+    async with _session.patch(url, params=params, json=payload) as resp:
+        if resp.status not in (200, 204):
+            print(f"[db] schedule_war_room_delete {resp.status}: {await resp.text()}")
+
+
+async def list_war_rooms_due_delete() -> list[dict]:
+    """Rooms with delete_at <= now (UTC)."""
+    from datetime import datetime, timezone
+    url = f"{_base_url}/rest/v1/war_rooms"
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    params = {"delete_at": f"lte.{now}", "select": "*"}
+    async with _session.get(url, params=params) as resp:
+        if resp.status != 200:
+            return []
+        return await resp.json()
+
+
 async def delete_war_room(guild_id: int, enemy_nation_id: int) -> None:
     url = f"{_base_url}/rest/v1/war_rooms"
     params = {"guild_id": f"eq.{guild_id}", "enemy_nation_id": f"eq.{enemy_nation_id}"}
