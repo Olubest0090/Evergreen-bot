@@ -576,16 +576,13 @@ class WarRoom(commands.Cog):
                     print(f"[warroom] sync error: {e}")
 
                 try:
-                    await self._track_attacks_for_guild(config[\"guild_id\"], guild, config.get(\"alliance_id\"))
-                    except Exception as e:
-                        print(f\"[warroom] attack tracking error: {e}\")
-                    try:
-                        await self._process_scheduled_deletes(guild)
-                    except Exception as e:
-                        print(f\"[warroom] scheduled delete: {e}\")
-        except Exception as e:
-            print(f"[warroom] loop error: {e}")
-
+                await self._track_attacks_for_guild(config["guild_id"], guild, config.get("alliance_id"))
+            except Exception as e:
+                print(f"[warroom] attack tracking error: {e}")
+            try:
+                await self._process_scheduled_deletes(guild)
+            except Exception as e:
+                print(f"[warroom] scheduled delete: {e}")
     @warroom_loop.before_loop
     async def before_loop(self):
         await self.bot.wait_until_ready()
