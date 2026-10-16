@@ -553,26 +553,42 @@ class AI(commands.Cog):
         if channel_id and author_id:
             war_ctx = await _war_room_tactical_context(self.bot, channel_id, author_id)
 
-        system = (
-            "You are Evergreen MILCOM gov. Speak like a human milcom lead in Discord — not a guide, not a calculator dump. "
-            "RULES FOR EVERY REPLY:\n"
-            "1) Max 2–4 short lines. No walls of text.\n"
-            "2) Tactical questions (airstrike/ground/naval/what next): start with YES, NO, or WAIT.\n"
-            "3) Then name the exact action: airstrike aircraft | airstrike tanks | airstrike ships | "
-            "airstrike soldiers | airstrike infra | airstrike money | ground | naval ships.\n"
-            "4) One reason only (MAP / AS / GC / blockade / odds). Do NOT paste full unit tables or formula essays.\n"
-            "5) Use WAR ROOM context as truth. MAP: ground 3, air/naval 4. If MAP too low → WAIT.\n"
-            "6) If they already hold air superiority → prefer ground, not another dogfight.\n"
-            "7) Never explain how to click buttons in the game UI. Never mention AI/models.\n"
-            "Example good reply: 'NO — only 2 MAP. Wait a turn, then ground (you already have AS).'\n"
-            "Example bad reply: long tutorial about the airstrike button or listing every calculation."
+        qlow = (question or "").lower()
+        tactical = any(
+            w in qlow
+            for w in (
+                "airstrike", "air strike", "ground", "naval", "blockade", "map",
+                "war", "as ", "superiority", "gc", "beige", "spy", "counter",
+                "target", "odds", "mmr", "rebuild", "ships", "tanks", "planes",
+                "what next", "should i", "attack",
+            )
         )
+
+        if tactical:
+            system = (
+                "You are Evergreen milcom on Discord. Talk like a real person, not a wiki. "
+                "Tactical asks: max 2–4 short lines. Start with YES, NO, or WAIT when relevant. "
+                "Name exact action (airstrike aircraft/tanks/ships/soldiers/infra/money, ground, naval). "
+                "One reason (MAP/AS/GC/blockade/odds). Use war-room context as truth. "
+                "Never teach UI clicks. Never say you are an AI/model."
+            )
+        else:
+            system = (
+                "You are Evergreen's Discord bot, but you chat like a normal guy in the server — "
+                "chill, brief, human. Not corporate, not a textbook, not only war-talk. "
+                "If they say hi/hey/what's up, answer like a friend (e.g. 'Hey bro, you good?'). "
+                "You can joke lightly. Keep replies short (1–3 lines) unless they ask for detail. "
+                "If they drift into war/spy/PnW tactics, switch to useful milcom advice. "
+                "Never say you are an AI, Claude, GPT, or a language model. Never lecture."
+            )
+
         user = (
-            f"Alliance knowledge:\n{knowledge}\n\n"
+            f"Alliance knowledge (optional context):\n{knowledge}\n\n"
             f"Live game data:\n{live or '(none)'}\n\n"
-            f"War room tactical context:\n{war_ctx or '(not a war room / no data)'}\n\n"
-            f"Member {author} says:\n{question}"
+            f"War room context:\n{war_ctx or '(not a war room)'}\n\n"
+            f"{author} says:\n{question}"
         )
+
         session = self.bot.http_session
         reply = await llm_generate(session, system, user)
         if len(reply) > MAX_REPLY_CHARS:
@@ -628,7 +644,7 @@ class AI(commands.Cog):
             try:
                 answer = await asyncio.wait_for(
                     self._answer(
-                        message.guild.id, content, str(message.author),
+                        message.guild.id, content, (message.author.display_name or message.author.name),
                         channel_id=message.channel.id, author_id=message.author.id,
                     ),
                     timeout=45,
