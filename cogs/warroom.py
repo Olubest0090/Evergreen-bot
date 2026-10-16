@@ -575,7 +575,7 @@ class WarRoom(commands.Cog):
                 except Exception as e:
                     print(f"[warroom] sync error: {e}")
 
-                try:
+            try:
                 await self._track_attacks_for_guild(config["guild_id"], guild, config.get("alliance_id"))
             except Exception as e:
                 print(f"[warroom] attack tracking error: {e}")
