@@ -138,8 +138,15 @@ def _hours_until_map(current: int, need: int) -> int:
     return missing * 2
 
 
+
 def _stack_orders(fighters: list[dict], enemy: dict, objective: str | None) -> str:
-    """Active only. Air all by IT%. GC ground OK. Naval zero before grind. Quiet on pure ground."""
+    """
+    Live controls only:
+      1) No AS on our war → airstrike aircraft (for AS / half tanks), ranked by IT%.
+      2) Enemy still has ships → naval until 0, ranked by IT%.
+      3) Then ground.
+    Inactive 3d+ → short farm note only.
+    """
     en_planes = int(enemy.get("aircraft") or 0)
     en_ships = int(enemy.get("ships") or 0)
     en_soldiers = int(enemy.get("soldiers") or 0)
@@ -147,122 +154,115 @@ def _stack_orders(fighters: list[dict], enemy: dict, objective: str | None) -> s
 
     if _inactive_days(enemy) >= 3:
         return "\n".join([
-            f"**Orders vs {_name(enemy)}** · inactive 3d+ — **farm/loot**",
-            "No AS/blockade stack plan on inactives.",
+            f"**Orders vs {_name(enemy)}** · inactive — farm/loot",
             "Ground for cash when MAP allows.",
-            f"Enemy — {en_soldiers:,}S · {en_tanks:,}T · {en_planes} planes · {en_ships} ships",
+            f"Enemy — {en_soldiers:,}S · {en_tanks:,}T · {en_planes}P · {en_ships} ships",
         ])
 
-    stack_as = any(f["controls"].air_sup_att for f in fighters)
-    stack_blockade = any(f["controls"].blockade_att for f in fighters)
-    navy_zero = en_ships <= 0
-
-    MIN_AIR_IT, MIN_AIR_WIN = 20.0, 35.0
-    MIN_NAV_IT, MIN_NAV_WIN = 20.0, 35.0
-    MIN_GND_WIN, MIN_GC_IT = 40.0, 20.0
+    MIN_AIR_IT, MIN_AIR_WIN = 15.0, 30.0
+    MIN_NAV_IT, MIN_NAV_WIN = 15.0, 30.0
+    MIN_GND_WIN = 35.0
 
     by_air = sorted(fighters, key=lambda f: float(f["air"].get("immense_pct") or 0), reverse=True)
     by_nav = sorted(fighters, key=lambda f: float(f["nav"].get("immense_pct") or 0), reverse=True)
     by_gnd = sorted(fighters, key=lambda f: float(f["gnd"].get("win_pct") or 0), reverse=True)
 
-    lines: list[str] = [f"**Orders vs {_name(enemy)}**", ""]
+    need_as = [f for f in fighters if not f["controls"].air_sup_att]
+    have_as = [f for f in fighters if f["controls"].air_sup_att]
+    all_as = len(need_as) == 0
+    ships_done = en_ships <= 0
 
-    # Pure ground phase → stop advising
-    if stack_as and (navy_zero or stack_blockade):
-        lines.append("**Phase: ground** — AS done, navy cleared/blockade up.")
-        lines.append("No more phase advice. Grind ground on your MAP.")
-        able = [f for f in by_gnd if int(f["map"]) >= 3 and float(f["gnd"].get("win_pct") or 0) >= MIN_GND_WIN]
-        if able:
-            lines.append("Ready: " + " · ".join(f"**{f['name']}**" for f in able))
-        lines.append("")
-        lines.append(f"Enemy — {en_soldiers:,}S · {en_tanks:,}T · {en_planes} planes · {en_ships} ships")
-        return "\n".join(lines)
+    lines = [f"**Orders vs {_name(enemy)}**", ""]
 
-    # AIR — everyone by IT%
-    if not stack_as:
-        lines.append("**Air — get AS (all who can, by IT %)**")
-        if en_planes <= 0:
-            lines.append("Enemy 0 planes — skip dogfight.")
-        else:
-            for f in by_air:
-                it = float(f["air"].get("immense_pct") or 0)
-                win = float(f["air"].get("win_pct") or 0)
-                fail = float(f["air"].get("fail_pct") or (100 - win))
-                mp = int(f["map"] or 0)
-                can = (it >= MIN_AIR_IT) or (win >= MIN_AIR_WIN and it >= 12)
-                if can and mp >= 4:
-                    lines.append(f"• **{f['name']}** — **airstrike aircraft** (\~{it:.0f}% IT / \~{win:.0f}% win) MAP {mp}")
-                elif can:
-                    hrs = _hours_until_map(mp, 4)
-                    lines.append(f"• **{f['name']}** — odds OK (\~{it:.0f}% IT) — \~**{hrs}h** to 4 MAP then air")
-                else:
-                    need = max(0, int(en_planes * 1.05) - int(f["planes"]))
-                    lines.append(f"• **{f['name']}** — **do not dogfight** (\~{it:.0f}% IT / \~{fail:.0f}% UT). Rebuild \~**{need}** planes.")
-        lines.append("")
-        lines.append("**Ground during air** — only if **GC** is realistic:")
-        any_gc = False
-        for f in by_gnd:
-            git = float(f["gnd"].get("immense_pct") or 0)
-            gwin = float(f["gnd"].get("win_pct") or 0)
-            mp = int(f["map"] or 0)
-            if gwin >= MIN_GND_WIN and git >= MIN_GC_IT and mp >= 3:
-                any_gc = True
-                lines.append(f"• **{f['name']}** — **ground OK** (\~{git:.0f}% IT → push GC)")
-        if not any_gc:
-            lines.append("• Nobody solid for GC yet — focus air.")
+    # --- AIR: live AS per war ---
+    lines.append("**Air superiority (live wars)**")
+    if all_as:
+        lines.append("All our wars have **AS** — tanks halved. No more dogfights unless they rebuild planes.")
     else:
-        lines.append("**Air:** AS held — no dogfight unless they rebuild planes.")
+        lines.append(
+            f"Need AS on {len(need_as)} war(s) — **airstrike aircraft** (goal: AS, not plane count). "
+            f"Enemy currently {en_planes} planes."
+        )
+        for f in sorted(need_as, key=lambda x: float(x["air"].get("immense_pct") or 0), reverse=True):
+            it = float(f["air"].get("immense_pct") or 0)
+            win = float(f["air"].get("win_pct") or 0)
+            mp = int(f["map"] or 0)
+            can = (it >= MIN_AIR_IT) or (win >= MIN_AIR_WIN) or en_planes <= 0
+            if can and mp >= 4:
+                lines.append(f"• **{f['name']}** — **airstrike aircraft** (\~{it:.0f}% IT) MAP {mp}")
+            elif can:
+                hrs = _hours_until_map(mp, 4)
+                lines.append(f"• **{f['name']}** — \~**{hrs}h** to 4 MAP then **airstrike aircraft** (\~{it:.0f}% IT)")
+            else:
+                lines.append(f"• **{f['name']}** — air odds weak (\~{it:.0f}% IT); rebuild planes then air")
+        if have_as:
+            lines.append("Already have AS: " + " · ".join(f"**{f['name']}**" for f in have_as))
 
-    # NAVAL — zero ships
+    # --- NAVAL: enemy ships still up ---
     lines.append("")
-    if navy_zero:
-        lines.append("**Naval:** ships **0** — done.")
+    if ships_done:
+        lines.append("**Naval:** enemy ships **0** — done.")
     else:
-        if not stack_as:
-            lines.append("**Naval:** after AS preferred; zero ships before full ground grind.")
-        else:
-            lines.append(f"**Naval — zero their {en_ships} ships (by IT %):**")
+        lines.append(f"**Naval:** enemy still has **{en_ships} ships** — zero them (by IT %):")
         for f in by_nav:
-            it = float(f["nav"].get("immense_pct") or 0)
-            win = float(f["nav"].get("win_pct") or 0)
-            mp = int(f["map"] or 0)
-            can = (it >= MIN_NAV_IT) or (win >= MIN_NAV_WIN and it >= 12)
             if int(f["ships"] or 0) <= 0:
                 lines.append(f"• **{f['name']}** — no ships")
                 continue
+            it = float(f["nav"].get("immense_pct") or 0)
+            win = float(f["nav"].get("win_pct") or 0)
+            mp = int(f["map"] or 0)
+            can = (it >= MIN_NAV_IT) or (win >= MIN_NAV_WIN)
             if can and mp >= 4:
-                lines.append(f"• **{f['name']}** — **naval** (\~{it:.0f}% IT / \~{win:.0f}% win)")
+                lines.append(f"• **{f['name']}** — **naval** (\~{it:.0f}% IT)")
             elif can:
                 hrs = _hours_until_map(mp, 4)
                 lines.append(f"• **{f['name']}** — \~**{hrs}h** then naval (\~{it:.0f}% IT)")
             else:
-                need = max(0, int(en_ships * 1.05) - int(f["ships"]))
-                lines.append(f"• **{f['name']}** — weak naval (\~{it:.0f}% IT). Rebuild \~**{need}** ships.")
-        if not by_nav:
-            lines.append("• Nobody has ships.")
+                lines.append(f"• **{f['name']}** — naval weak (\~{it:.0f}% IT); rebuild ships")
 
-    # GROUND grind lock
+    # --- GROUND ---
     lines.append("")
-    if not stack_as:
-        lines.append("**Full ground grind:** locked until AS (GC exception above).")
-    elif not navy_zero and not stack_blockade:
-        lines.append("**Full ground grind:** locked until ships **zeroed** / blockade.")
-    else:
-        lines.append("**Ground:**")
+    if not all_as:
+        lines.append("**Ground:** preferred after **your** war has AS (tanks halved). If you already have AS on your war — ground when MAP ≥ 3.")
         for f in by_gnd:
-            gwin = float(f["gnd"].get("win_pct") or 0)
             mp = int(f["map"] or 0)
+            gwin = float(f["gnd"].get("win_pct") or 0)
+            has = f["controls"].air_sup_att
+            if has and mp >= 3 and gwin >= MIN_GND_WIN:
+                lines.append(f"• **{f['name']}** — **ground** (you have AS, \~{gwin:.0f}% win)")
+            elif has and mp < 3:
+                hrs = _hours_until_map(mp, 3)
+                lines.append(f"• **{f['name']}** — AS held — \~**{hrs}h** to 3 MAP then ground")
+            elif not has:
+                lines.append(f"• **{f['name']}** — get AS first on your war, then ground")
+    elif not ships_done:
+        lines.append("**Ground:** AS done. Ships still up — you may ground for loot, but **finish naval** (zero ships).")
+        for f in by_gnd:
+            mp = int(f["map"] or 0)
+            gwin = float(f["gnd"].get("win_pct") or 0)
+            if mp >= 3 and gwin >= MIN_GND_WIN:
+                lines.append(f"• **{f['name']}** — **ground OK** (\~{gwin:.0f}% win) + keep naval pressure")
+            elif mp < 3:
+                hrs = _hours_until_map(mp, 3)
+                lines.append(f"• **{f['name']}** — \~**{hrs}h** to 3 MAP")
+    else:
+        lines.append("**Ground phase** — AS done, ships 0. No more phase lectures. Grind.")
+        for f in by_gnd:
+            mp = int(f["map"] or 0)
+            gwin = float(f["gnd"].get("win_pct") or 0)
             if mp >= 3 and gwin >= MIN_GND_WIN:
                 lines.append(f"• **{f['name']}** — **ground** (\~{gwin:.0f}% win)")
-            elif mp >= 3:
-                lines.append(f"• **{f['name']}** — rebuild (\~{gwin:.0f}% win)")
-            else:
+            elif mp < 3:
                 hrs = _hours_until_map(mp, 3)
                 lines.append(f"• **{f['name']}** — \~**{hrs}h** to 3 MAP")
 
     lines.append("")
-    lines.append(f"Enemy **{_name(enemy)}** — {en_soldiers:,}S · {en_tanks:,}T · {en_planes} planes · {en_ships} ships")
+    lines.append(
+        f"Enemy **{_name(enemy)}** — {en_soldiers:,}S · {en_tanks:,}T · {en_planes} planes · {en_ships} ships"
+    )
     return "\n".join(lines)
+
+
 
 
 
