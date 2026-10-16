@@ -741,7 +741,6 @@ async def post_stack_advice_for_room(bot, guild_id: int, channel: discord.TextCh
 
 
 async def _check_order_violations(bot, guild_id, channel, enemy_id, batch):
-    """Disabled — no compliance pings."""
     return
 
 
