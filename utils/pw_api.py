@@ -99,6 +99,8 @@ class PWApiClient:
               domestic_policy
               war_policy
               projects
+              turns_since_last_city
+              turns_since_last_project
               mass_irrigation
               international_trade_center
               telecommunications_satellite

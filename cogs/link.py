@@ -11,6 +11,7 @@ from discord.ext import commands
 from discord.ui import View, Button
 
 from utils import database, embeds
+from utils.revenue import compute_revenue
 
 NATION_URL_PATTERN = re.compile(r"nation[/=]id=(\d+)|nation/(\d+)")
 
@@ -60,6 +61,33 @@ def format_duration(last_active_iso: str | None) -> str:
         return f"{minutes}m ago"
     except Exception:
         return "unknown"
+
+
+
+# Locutus TurnTimer: remaining = cooldown - turns_since_last_*
+# Cooldowns match Locutus GameTimers (city/project = 20 turns each; 1 turn = 2h)
+CITY_TIMER_TURNS = 20
+PROJECT_TIMER_TURNS = 20
+
+
+def turns_remaining(turns_since, cooldown: int) -> int:
+    if turns_since is None:
+        return 0
+    try:
+        since = int(turns_since)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, cooldown - since)
+
+
+def format_turns_timer(turns_left: int) -> str:
+    if turns_left <= 0:
+        return "**Ready**"
+    hours = turns_left * 2  # PnW turn = 2 hours
+    if hours >= 24:
+        d, h = divmod(hours, 24)
+        return f"**{turns_left} turns** (\~{d}d {h}h)"
+    return f"**{turns_left} turns** (\~{hours}h)"
 
 
 def format_timer_seconds(seconds: int | float | None) -> str:
@@ -208,115 +236,57 @@ class WhoisView(View):
         super().__init__(timeout=timeout)
         self.nation = nation
 
-    @discord.ui.button(label="Revenue", style=discord.ButtonStyle.primary, emoji="💰")
+    @discord.ui.button(label="Revenue", style=discord.ButtonStyle.primary, emoji="\U0001F4B0")
     async def revenue_button(self, interaction: discord.Interaction, button: Button):
         await interaction.response.defer(ephemeral=True)
-
         try:
-            nation = self.nation
-            cities = nation.get("cities") or []
+            result = await compute_revenue(self.nation, interaction.client.http_session)
 
-            has_mass_irrigation = bool(nation.get("mass_irrigation"))
-
-            # PRODUCTION (wiki rates)
-            prod_food = 0.0
-            prod_coal = 0.0
-            prod_oil = 0.0
-            prod_uranium = 0.0
-            prod_iron = 0.0
-            prod_bauxite = 0.0
-            prod_steel = 0.0
-
-            for c in cities:
-                land = c.get("land", 0) or 0
-                if has_mass_irrigation:
-                    prod_food += (land * 3 / 100)
-                else:
-                    prod_food += (land * 3 / 125)
-
-                prod_coal     += (c.get("coalmine", 0) or 0) * 3
-                prod_oil      += (c.get("oilwell", 0) or 0) * 3
-                prod_uranium  += (c.get("uramine", 0) or 0) * 3
-                prod_iron     += (c.get("ironmine", 0) or 0) * 3
-                prod_bauxite  += (c.get("bauxitemine", 0) or 0) * 3
-                prod_steel    += (c.get("steelmill", 0) or 0) * 9
-
-            # CONSUMPTION
-            cons_food = 0.0
-            cons_coal = 0.0
-            cons_oil = 0.0
-            cons_uranium = 0.0
-            cons_iron = 0.0
-
-            for c in cities:
-                cons_coal     += (c.get("coalpower", 0) or 0) * 1.2
-                cons_oil      += (c.get("oilpower", 0) or 0) * 1.2
-                cons_oil      += (c.get("gasrefinery", 0) or 0) * 3
-                cons_uranium  += (c.get("nuclearpower", 0) or 0) * 2.4
-                cons_iron     += (c.get("steelmill", 0) or 0) * 3
-
-            total_infra = sum(c.get("infrastructure", 0) or 0 for c in cities)
-            cons_food += (total_infra * 100 / 1000) * 0.5
-
-            # NET
-            net_food     = prod_food - cons_food
-            net_coal     = prod_coal - cons_coal
-            net_oil      = prod_oil - cons_oil
-            net_uranium  = prod_uranium - cons_uranium
-            net_iron     = prod_iron - cons_iron
-            net_bauxite  = prod_bauxite
-            net_steel    = prod_steel
-            net_money    = 0.0
+            def fmt(d):
+                return ", ".join(f"{k.upper()}={v:,.2f}" for k, v in d.items())
 
             text = (
-                f"**Production:**\n"
-                f"```\n"
-                f"{{FOOD={prod_food:,.2f}, COAL={prod_coal:,.2f}, OIL={prod_oil:,.2f}, "
-                f"URANIUM={prod_uranium:,.2f}, IRON={prod_iron:,.2f}, BAUXITE={prod_bauxite:,.2f}, STEEL={prod_steel:,.2f}}}\n"
-                f"```\n"
-                f"**Consumption:**\n"
-                f"```\n"
-                f"{{FOOD={-cons_food:,.2f}, COAL={-cons_coal:,.2f}, OIL={-cons_oil:,.2f}, "
-                f"URANIUM={-cons_uranium:,.2f}, IRON={-cons_iron:,.2f}}}\n"
-                f"```\n"
-                f"**Net:**\n"
-                f"```\n"
-                f"{{MONEY={net_money:,.2f}, FOOD={net_food:,.2f}, COAL={net_coal:,.2f}, OIL={net_oil:,.2f}, "
-                f"URANIUM={net_uranium:,.2f}, IRON={net_iron:,.2f}, BAUXITE={net_bauxite:,.2f}, STEEL={net_steel:,.2f}}}\n"
-                f"```"
+                f"**Production:**\n```\n{fmt(result['production'])}\n```\n"
+                f"**Consumption:**\n```\n{fmt({k: -v for k, v in result['consumption'].items()})}\n```\n"
+                f"**Net Resources:**\n```\n{fmt(result['net'])}\n```\n"
+                f"**Gross City Income:** ${result['gross_money']:,.2f}\n"
+                f"**Military Upkeep:** ${result['military_money']:,.2f}\n"
+                f"**Trade Bonus:** ${result['trade_bonus']:,.2f}\n"
+                f"**Net Money:** ${result['net_money']:,.2f}\n\n"
+                f"**Converted Total:** ${result['converted_total']:,.2f}\n"
+                f"*({'at war' if result['at_war'] else 'peacetime'} soldier food rate applied)*"
             )
-
             embed = embeds.info("Nation Revenue", text)
             await interaction.followup.send(embed=embed, ephemeral=True)
-
         except Exception as e:
             await interaction.followup.send(f"Error calculating revenue: `{str(e)}`", ephemeral=True)
 
     @discord.ui.button(label="Timers", style=discord.ButtonStyle.secondary, emoji="⏱️")
     async def timers_button(self, interaction: discord.Interaction, button: Button):
+        """Locutus-style /nation TurnTimer: city + project turns left."""
         nation = self.nation
-        projects = nation.get("projects", 0) or 0
-        beige = nation.get("beige_turns", 0) or 0
-        vacation = nation.get("vacation_mode_turns", 0) or 0
-
+        city_left = turns_remaining(nation.get("turns_since_last_city"), CITY_TIMER_TURNS)
+        proj_left = turns_remaining(nation.get("turns_since_last_project"), PROJECT_TIMER_TURNS)
+        projects = int(nation.get("projects") or 0)
+        # rough slot estimate (same idea as before)
         max_projects = 20
         if nation.get("urban_planning"):
             max_projects += 5
         if nation.get("advanced_urban_planning"):
             max_projects += 5
+        beige = int(nation.get("beige_turns") or 0)
+        vacation = int(nation.get("vacation_mode_turns") or 0)
 
         text = (
-            f"**City:** Ready (full turn tracking coming)\n"
-            f"**Project:** Ready | ({projects}/{max_projects} slots)\n"
-            f"**Color:** Ready (full turn tracking coming)\n"
-            f"**Domestic Policy:** Ready (full turn tracking coming)\n"
-            f"**War Policy:** Ready (full turn tracking coming)\n"
-            f"**Beige Turns:** {beige} turns\n"
-            f"**Vacation:** {vacation} turns"
+            f"**City timer:** {format_turns_timer(city_left)}\n"
+            f"**Project timer:** {format_turns_timer(proj_left)} "
+            f"| slots **{projects}/{max_projects}**\n"
+            f"**Beige:** {beige} turns" + (f" (\~{beige * 2}h)" if beige else "") + "\n"
+            f"**Vacation:** {vacation} turns" + (f" (\~{vacation * 2}h)" if vacation else "")
         )
-
         embed = embeds.info("Nation Timers", text)
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
 
 class Link(commands.Cog):
