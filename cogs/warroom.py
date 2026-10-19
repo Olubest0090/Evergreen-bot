@@ -400,7 +400,59 @@ class WarRoom(commands.Cog):
         await database.set_pin_message(interaction.guild_id, room["enemy_nation_id"], msg.id)
 
 
-    @warroom_group.command(name="delete", description="Delete this war room now or after N hours")
+
+    @warroom_group.command(
+        name="cleanup",
+        description="Delete all war rooms whose wars are already finished (no grace wait)",
+    )
+    async def warroom_cleanup(self, interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True)
+        guild = interaction.guild
+        guild_id = interaction.guild_id
+        config = await database.get_alerts_config(guild_id)
+        alliance_id = config.get("alliance_id") if config else None
+        if not alliance_id:
+            return await interaction.followup.send(
+                embed=embeds.error("No alliance", "Set alliance in alerts config first.")
+            )
+        try:
+            wars = await self.bot.pw_client.get_active_wars(alliance_id)
+        except Exception as e:
+            return await interaction.followup.send(embed=embeds.error("API error", str(e)[:300]))
+
+        active_enemies = set()
+        for war in wars:
+            enemy = war.get("attacker") if war.get("_side") == "defense" else war.get("defender")
+            if enemy and enemy.get("id"):
+                active_enemies.add(int(enemy["id"]))
+
+        rooms = await database.get_all_war_rooms(guild_id)
+        closed = 0
+        for room in rooms:
+            eid = int(room["enemy_nation_id"])
+            if eid in active_enemies:
+                continue
+            ch = guild.get_channel(int(room["channel_id"]))
+            if ch:
+                try:
+                    await ch.delete(reason=f"/warroom cleanup by {interaction.user}")
+                except discord.HTTPException:
+                    pass
+            try:
+                await database.delete_war_room(guild_id, eid)
+            except Exception as e:
+                print(f"[warroom] cleanup db: {e}")
+            closed += 1
+
+        await interaction.followup.send(
+            embed=embeds.success(
+                "War room cleanup",
+                f"Deleted **{closed}** finished war room(s). Active wars left untouched.",
+            )
+        )
+
+
+    @warroom_group.command(name="delete", description="Delete THIS room now (0) or schedule in N hours. Finished wars also auto-delete after 6h for all rooms.")
     @app_commands.describe(planning="Hours before delete (0 = now)")
     async def warroom_delete(self, interaction: discord.Interaction, planning: float = 0.0):
         from datetime import datetime, timezone, timedelta
@@ -542,33 +594,32 @@ class WarRoom(commands.Cog):
         # missing cycle is treated as likely API flakiness/lag rather
         # than the war actually ending, to stop rooms from flapping
         # closed-then-recreated on a transient data hiccup.
-        MISSING_THRESHOLD = 30  # \~1 hour (30 × 120s)
+        # Auto-close: enemy has no active wars for \~6 hours → delete room
+        # Loop runs every 120s → 180 cycles ≈ 6 hours
+        MISSING_THRESHOLD = 180
         closed = 0
         existing_rooms = await database.get_all_war_rooms(guild_id)
-        
-        # Force all active enemy IDs to int for safe lookups
         active_enemy_ids = {int(eid) for eid in by_enemy.keys()}
 
         for room in existing_rooms:
             enemy_id = int(room["enemy_nation_id"])
-            
-            # If enemy is actively fighting, reset missing count in Supabase
+
             if enemy_id in active_enemy_ids:
                 if room.get("missing_count", 0) > 0:
                     await database.update_war_room_missing_count(guild_id, enemy_id, 0)
                 continue
 
-            # Enemy missing: increment persistent count
-            current_missing = room.get("missing_count", 0) + 1
+            current_missing = int(room.get("missing_count") or 0) + 1
             if current_missing < MISSING_THRESHOLD:
                 await database.update_war_room_missing_count(guild_id, enemy_id, current_missing)
                 continue
 
-            # Grace period expired (3 consecutive fails stored in DB) — safely close room
             channel = guild.get_channel(int(room["channel_id"]))
             if channel:
                 try:
-                    pass  # auto-delete off; use /warroom delete
+                    await channel.delete(
+                        reason="War(s) finished — auto-delete after 6h grace"
+                    )
                 except discord.HTTPException:
                     pass
             await database.delete_war_room(guild_id, enemy_id)
