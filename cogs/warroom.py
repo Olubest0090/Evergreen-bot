@@ -452,7 +452,7 @@ class WarRoom(commands.Cog):
         )
 
 
-    @warroom_group.command(name="delete", description="Delete THIS room now (0) or schedule in N hours. Finished wars also auto-delete after 6h for all rooms.")
+    @warroom_group.command(name="delete", description="Delete this room now (0) or after N hours. Finished wars auto-delete in 6h.")
     @app_commands.describe(planning="Hours before delete (0 = now)")
     async def warroom_delete(self, interaction: discord.Interaction, planning: float = 0.0):
         from datetime import datetime, timezone, timedelta
