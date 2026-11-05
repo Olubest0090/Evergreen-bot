@@ -65,6 +65,11 @@ class EvergreenBot(commands.Bot):
             await self.load_extension(cog)
             log.info("Loaded cog: %s", cog)
 
+        try:
+            await self.load_extension("cogs.cleanup_timer")
+        except Exception:
+            log.exception("cleanup_timer failed to load")
+
         if TEST_GUILD:
             self.tree.copy_global_to(guild=TEST_GUILD)
             await self.tree.sync(guild=TEST_GUILD)
