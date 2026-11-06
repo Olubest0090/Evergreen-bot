@@ -191,15 +191,5 @@ class Sphere(commands.Cog):
                     except Exception:
                         log.exception("Spy tracking failed for alliance %s",aid)
 
-    @alliance.error
-    async def alliance_error(self,interaction: discord.Interaction,error: app_commands.AppCommandError):
-        if isinstance(error,app_commands.MissingPermissions):
-            msg="You need server Administrator permission to manage the sphere alliance registry."
-        else:
-            msg=f"Sphere command failed: {error}"
-        if interaction.response.is_done(): await interaction.followup.send(msg,ephemeral=True)
-        else: await interaction.response.send_message(msg,ephemeral=True)
-
-
 async def setup(bot: commands.Bot):
     await bot.add_cog(Sphere(bot))
