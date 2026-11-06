@@ -13,6 +13,9 @@ C20-30) to match your server's existing role naming.
 /admin syncwarrooms — force sync now.
 """
 
+import asyncio
+import re
+
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -23,6 +26,9 @@ from utils.formatting import nation_block
 
 ATTACK_TRACK_INTERVAL_SECONDS = 120
 INACTIVITY_CUTOFF_DAYS = 7
+
+# Names the bot gives war rooms: c12-enemyname (current) or enemyname-123456 (older)
+ROOM_NAME_RE = re.compile(r"^(c\d+-.+|.+-\d{5,})$")
 
 
 def find_bracket_label(brackets: list[dict], num_cities: int) -> str:
@@ -403,54 +409,161 @@ class WarRoom(commands.Cog):
 
     @warroom_group.command(
         name="cleanup",
-        description="Delete all war rooms whose wars are already finished (no grace wait)",
+        description="Delete war rooms with no active enemy (and rooms whose enemy is inactive 7+ days)",
     )
-    async def warroom_cleanup(self, interaction: discord.Interaction):
+    @app_commands.describe(
+        dry_run="Only list what would be deleted",
+        include_inactive="Also delete rooms whose enemy has been inactive 7+ days (default: yes)",
+        force="Go ahead even if the API reports zero active wars",
+    )
+    async def warroom_cleanup(
+        self,
+        interaction: discord.Interaction,
+        dry_run: bool = False,
+        include_inactive: bool = True,
+        force: bool = False,
+    ):
         await interaction.response.defer(thinking=True)
-        guild = interaction.guild
-        guild_id = interaction.guild_id
-        config = await database.get_alerts_config(guild_id)
-        alliance_id = config.get("alliance_id") if config else None
-        if not alliance_id:
-            return await interaction.followup.send(
-                embed=embeds.error("No alliance", "Set alliance in alerts config first.")
-            )
         try:
-            wars = await self.bot.pw_client.get_active_wars(alliance_id)
+            guild = interaction.guild
+            gid = interaction.guild_id
+            config = await database.get_alerts_config(gid)
+            alliance_id = config.get("alliance_id") if config else None
+            if not alliance_id:
+                return await interaction.followup.send(
+                    embed=embeds.error("No alliance", "Set alliance in alerts config first.")
+                )
+
+            wars = await self.bot.pw_client.get_active_wars(alliance_id, fresh=True)
+            if not wars and not force:
+                return await interaction.followup.send(
+                    embed=embeds.error(
+                        "No wars returned",
+                        "The API reports zero active wars, so I stopped instead of deleting "
+                        "every room. If every war really ended, run again with force:True.",
+                    )
+                )
+
+            active = set()
+            for war in wars:
+                enemy = war.get("attacker") if war.get("_side") == "defense" else war.get("defender")
+                if not enemy or not enemy.get("id"):
+                    continue
+                if include_inactive and is_inactive(enemy.get("last_active")):
+                    continue
+                active.add(int(enemy["id"]))
+
+            rooms = await database.get_all_war_rooms(gid)
+            if not isinstance(rooms, list):
+                raise RuntimeError(f"Database returned: {str(rooms)[:200]}")
+            stale = [r for r in rooms if int(r["enemy_nation_id"]) not in active]
+
+            if dry_run:
+                names = []
+                for r in stale:
+                    ch = guild.get_channel(int(r["channel_id"]))
+                    names.append(f"#{ch.name}" if ch else f"(channel gone, enemy {r['enemy_nation_id']})")
+                text = "\n".join(names) or "Nothing to delete."
+                return await interaction.followup.send(
+                    embed=embeds.info(f"Dry run: {len(stale)} room(s) would be deleted", text[:3800])
+                )
+
+            closed = failed = 0
+            for room in stale:
+                eid = int(room["enemy_nation_id"])
+                ch = guild.get_channel(int(room["channel_id"]))
+                if ch:
+                    try:
+                        await ch.delete(reason=f"/warroom cleanup by {interaction.user}")
+                    except discord.NotFound:
+                        pass
+                    except discord.HTTPException as e:
+                        print(f"[warroom] cleanup could not delete #{ch.name}: {e}")
+                        failed += 1
+                        continue
+                await database.delete_war_room(gid, eid)
+                closed += 1
+                await asyncio.sleep(1)
+
+            msg = f"Deleted **{closed}** room(s). Rooms with a live, active enemy were left alone."
+            if failed:
+                msg += f"\n{failed} could not be deleted (check the bot's Manage Channels permission)."
+            await interaction.followup.send(embed=embeds.success("War room cleanup", msg))
         except Exception as e:
-            return await interaction.followup.send(embed=embeds.error("API error", str(e)[:300]))
+            import traceback
 
-        active_enemies = set()
-        for war in wars:
-            enemy = war.get("attacker") if war.get("_side") == "defense" else war.get("defender")
-            if enemy and enemy.get("id"):
-                active_enemies.add(int(enemy["id"]))
+            traceback.print_exc()
+            await interaction.followup.send(embed=embeds.error("Cleanup failed", str(e)[:300]))
 
-        rooms = await database.get_all_war_rooms(guild_id)
-        closed = 0
-        for room in rooms:
-            eid = int(room["enemy_nation_id"])
-            if eid in active_enemies:
-                continue
-            ch = guild.get_channel(int(room["channel_id"]))
-            if ch:
+    @warroom_group.command(
+        name="sweep",
+        description="Find old war-room channels the bot no longer tracks (and optionally delete them)",
+    )
+    @app_commands.describe(delete="False = just list them (default). True = delete them.")
+    async def warroom_sweep(self, interaction: discord.Interaction, delete: bool = False):
+        await interaction.response.defer(thinking=True)
+        try:
+            guild = interaction.guild
+            gid = interaction.guild_id
+            brackets = await database.list_brackets(gid)
+            rooms = await database.get_all_war_rooms(gid)
+            if not isinstance(brackets, list) or not isinstance(rooms, list):
+                raise RuntimeError("Database returned an unexpected answer.")
+            labels = {str(b["label"]).strip().lower() for b in brackets}
+            tracked = {int(r["channel_id"]) for r in rooms}
+
+            categories, orphans = [], []
+            for cat in guild.categories:
+                name = cat.name.strip().lower()
+                if name not in labels and not name.startswith("warcat"):
+                    continue
+                categories.append(cat)
+                for ch in cat.text_channels:
+                    if ch.id not in tracked and ROOM_NAME_RE.match(ch.name):
+                        orphans.append(ch)
+
+            if not delete:
+                lines = [f"#{c.name}  ({c.category.name})" for c in orphans]
+                text = "\n".join(lines) or "No untracked war-room channels found."
+                tail = (
+                    "\n\nRun again with delete:True to remove them. Any that belong to a live "
+                    "war are re-created automatically within a couple of minutes."
+                )
+                return await interaction.followup.send(
+                    embed=embeds.info(f"{len(orphans)} untracked war-room channel(s)", text[:3500] + tail)
+                )
+
+            deleted = failed = 0
+            for ch in orphans:
                 try:
-                    await ch.delete(reason=f"/warroom cleanup by {interaction.user}")
-                except discord.HTTPException:
-                    pass
-            try:
-                await database.delete_war_room(guild_id, eid)
-            except Exception as e:
-                print(f"[warroom] cleanup db: {e}")
-            closed += 1
+                    await ch.delete(reason=f"/warroom sweep by {interaction.user}")
+                    deleted += 1
+                except discord.NotFound:
+                    deleted += 1
+                except discord.HTTPException as e:
+                    print(f"[warroom] sweep could not delete #{ch.name}: {e}")
+                    failed += 1
+                await asyncio.sleep(1)
 
-        await interaction.followup.send(
-            embed=embeds.success(
-                "War room cleanup",
-                f"Deleted **{closed}** finished war room(s). Active wars left untouched.",
-            )
-        )
+            removed_cats = 0
+            for cat in categories:
+                fresh = guild.get_channel(cat.id)
+                if fresh and not fresh.channels:
+                    try:
+                        await fresh.delete(reason=f"/warroom sweep by {interaction.user}")
+                        removed_cats += 1
+                    except discord.HTTPException:
+                        pass
 
+            msg = f"Deleted **{deleted}** channel(s) and **{removed_cats}** empty categor(ies)."
+            if failed:
+                msg += f"\n{failed} failed (check the bot's Manage Channels permission)."
+            await interaction.followup.send(embed=embeds.success("War room sweep", msg))
+        except Exception as e:
+            import traceback
+
+            traceback.print_exc()
+            await interaction.followup.send(embed=embeds.error("Sweep failed", str(e)[:300]))
 
     @warroom_group.command(name="delete", description="Delete this room now (0) or after N hours. Finished wars auto-delete in 6h.")
     @app_commands.describe(planning="Hours before delete (0 = now)")
@@ -650,6 +763,30 @@ class WarRoom(commands.Cog):
                     print(f"[warroom] scheduled delete: {e}")
         except Exception as e:
             print(f"[warroom] loop error: {e}")
+
+    async def _run_scheduled_deletes(self, guild: discord.Guild) -> None:
+        """Runs each loop cycle: delete rooms whose /warroom delete timer is up."""
+        sched = getattr(self, "_scheduled_deletes", None)
+        if not sched:
+            return
+        now = datetime.now(timezone.utc)
+        for key, (when, channel_id) in list(sched.items()):
+            if key[0] != guild.id or when > now:
+                continue
+            sched.pop(key, None)
+            ch = guild.get_channel(int(channel_id))
+            if ch:
+                try:
+                    await ch.delete(reason="Scheduled /warroom delete")
+                except discord.NotFound:
+                    pass
+                except discord.HTTPException as e:
+                    print(f"[warroom] scheduled delete failed: {e}")
+                    continue
+            try:
+                await database.delete_war_room(guild.id, int(key[1]))
+            except Exception as e:
+                print(f"[warroom] scheduled delete db error: {e}")
 
     @warroom_loop.before_loop
     async def before_loop(self):

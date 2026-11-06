@@ -466,9 +466,9 @@ async def _war_room_tactical_context(bot, channel_id: int, author_id: int) -> st
             )
             nav = simulate_naval(our_f, en_f)
             lines.append(
-                f"Odds: Air \~{air['win_pct']:.0f}% win/\~{air['immense_pct']:.0f}% IT | "
-                f"Ground \~{gnd['win_pct']:.0f}%/\~{gnd['immense_pct']:.0f}% IT | "
-                f"Naval \~{nav['win_pct']:.0f}%/\~{nav['immense_pct']:.0f}% IT"
+                f"Odds: Air \\~{air['win_pct']:.0f}% win/\\~{air['immense_pct']:.0f}% IT | "
+                f"Ground \\~{gnd['win_pct']:.0f}%/\\~{gnd['immense_pct']:.0f}% IT | "
+                f"Naval \\~{nav['win_pct']:.0f}%/\\~{nav['immense_pct']:.0f}% IT"
             )
             tips = advice_for_war(
                 our=our_f, enemy=en_f,
@@ -758,11 +758,11 @@ class AI(commands.Cog):
                 for unit, count in report.destroyed.items():
                     val = unit_production_value(unit, count, prices)
                     damage_value += val
-                    lines.append(f"• Destroyed {count}× {unit}: \~{format_money(val)} build value")
+                    lines.append(f"• Destroyed {count}× {unit}: \\~{format_money(val)} build value")
             if report.spies_killed and "spy" not in report.destroyed:
                 val = unit_production_value("spy", report.spies_killed, prices)
                 damage_value += val
-                lines.append(f"• Enemy spies killed: {report.spies_killed} (\~{format_money(val)})")
+                lines.append(f"• Enemy spies killed: {report.spies_killed} (\\~{format_money(val)})")
 
             op_cost = float(report.op_cost_money or 0)
             if report.op_cost_money is not None:
@@ -773,7 +773,7 @@ class AI(commands.Cog):
                 spy_loss_cost = report.spies_lost * SPY_RECRUIT_COST
                 lines.append(
                     f"• Your spies lost: {report.spies_lost} "
-                    f"(\~{format_money(spy_loss_cost)} recruit cost)"
+                    f"(\\~{format_money(spy_loss_cost)} recruit cost)"
                 )
 
             net = damage_value - op_cost - spy_loss_cost

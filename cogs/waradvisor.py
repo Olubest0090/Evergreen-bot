@@ -189,12 +189,12 @@ def _stack_orders(fighters: list[dict], enemy: dict, objective: str | None) -> s
             mp = int(f["map"] or 0)
             can = (it >= MIN_AIR_IT) or (win >= MIN_AIR_WIN) or en_planes <= 0
             if can and mp >= 4:
-                lines.append(f"• **{f['name']}** — **airstrike aircraft** (\~{it:.0f}% IT) MAP {mp}")
+                lines.append(f"• **{f['name']}** — **airstrike aircraft** (\\~{it:.0f}% IT) MAP {mp}")
             elif can:
                 hrs = _hours_until_map(mp, 4)
-                lines.append(f"• **{f['name']}** — \~**{hrs}h** to 4 MAP then **airstrike aircraft** (\~{it:.0f}% IT)")
+                lines.append(f"• **{f['name']}** — \\~**{hrs}h** to 4 MAP then **airstrike aircraft** (\\~{it:.0f}% IT)")
             else:
-                lines.append(f"• **{f['name']}** — air odds weak (\~{it:.0f}% IT); rebuild planes then air")
+                lines.append(f"• **{f['name']}** — air odds weak (\\~{it:.0f}% IT); rebuild planes then air")
         if have_as:
             lines.append("Already have AS: " + " · ".join(f"**{f['name']}**" for f in have_as))
 
@@ -213,12 +213,12 @@ def _stack_orders(fighters: list[dict], enemy: dict, objective: str | None) -> s
             mp = int(f["map"] or 0)
             can = (it >= MIN_NAV_IT) or (win >= MIN_NAV_WIN)
             if can and mp >= 4:
-                lines.append(f"• **{f['name']}** — **naval** (\~{it:.0f}% IT)")
+                lines.append(f"• **{f['name']}** — **naval** (\\~{it:.0f}% IT)")
             elif can:
                 hrs = _hours_until_map(mp, 4)
-                lines.append(f"• **{f['name']}** — \~**{hrs}h** then naval (\~{it:.0f}% IT)")
+                lines.append(f"• **{f['name']}** — \\~**{hrs}h** then naval (\\~{it:.0f}% IT)")
             else:
-                lines.append(f"• **{f['name']}** — naval weak (\~{it:.0f}% IT); rebuild ships")
+                lines.append(f"• **{f['name']}** — naval weak (\\~{it:.0f}% IT); rebuild ships")
 
     # --- GROUND ---
     lines.append("")
@@ -229,10 +229,10 @@ def _stack_orders(fighters: list[dict], enemy: dict, objective: str | None) -> s
             gwin = float(f["gnd"].get("win_pct") or 0)
             has = f["controls"].air_sup_att
             if has and mp >= 3 and gwin >= MIN_GND_WIN:
-                lines.append(f"• **{f['name']}** — **ground** (you have AS, \~{gwin:.0f}% win)")
+                lines.append(f"• **{f['name']}** — **ground** (you have AS, \\~{gwin:.0f}% win)")
             elif has and mp < 3:
                 hrs = _hours_until_map(mp, 3)
-                lines.append(f"• **{f['name']}** — AS held — \~**{hrs}h** to 3 MAP then ground")
+                lines.append(f"• **{f['name']}** — AS held — \\~**{hrs}h** to 3 MAP then ground")
             elif not has:
                 lines.append(f"• **{f['name']}** — get AS first on your war, then ground")
     elif not ships_done:
@@ -241,20 +241,20 @@ def _stack_orders(fighters: list[dict], enemy: dict, objective: str | None) -> s
             mp = int(f["map"] or 0)
             gwin = float(f["gnd"].get("win_pct") or 0)
             if mp >= 3 and gwin >= MIN_GND_WIN:
-                lines.append(f"• **{f['name']}** — **ground OK** (\~{gwin:.0f}% win) + keep naval pressure")
+                lines.append(f"• **{f['name']}** — **ground OK** (\\~{gwin:.0f}% win) + keep naval pressure")
             elif mp < 3:
                 hrs = _hours_until_map(mp, 3)
-                lines.append(f"• **{f['name']}** — \~**{hrs}h** to 3 MAP")
+                lines.append(f"• **{f['name']}** — \\~**{hrs}h** to 3 MAP")
     else:
         lines.append("**Ground phase** — AS done, ships 0. No more phase lectures. Grind.")
         for f in by_gnd:
             mp = int(f["map"] or 0)
             gwin = float(f["gnd"].get("win_pct") or 0)
             if mp >= 3 and gwin >= MIN_GND_WIN:
-                lines.append(f"• **{f['name']}** — **ground** (\~{gwin:.0f}% win)")
+                lines.append(f"• **{f['name']}** — **ground** (\\~{gwin:.0f}% win)")
             elif mp < 3:
                 hrs = _hours_until_map(mp, 3)
-                lines.append(f"• **{f['name']}** — \~**{hrs}h** to 3 MAP")
+                lines.append(f"• **{f['name']}** — \\~**{hrs}h** to 3 MAP")
 
     lines.append("")
     lines.append(
@@ -270,34 +270,52 @@ def _stack_orders(fighters: list[dict], enemy: dict, objective: str | None) -> s
 
 
 
+OBJ_BUTTONS = {
+    "abg": (OBJ_AIR_BLOCKADE_GROUND, "Air \u2192 Blockade \u2192 Ground", discord.ButtonStyle.primary),
+    "ag": (OBJ_AIR_GROUND, "Air \u2192 Ground", discord.ButtonStyle.secondary),
+    "bg": (OBJ_BLOCKADE_GROUND, "Blockade \u2192 Ground", discord.ButtonStyle.secondary),
+    "g": (OBJ_GROUND, "Ground focus", discord.ButtonStyle.secondary),
+}
+
+
+class ObjectiveButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"wobj:(?P<code>[a-z]+):(?P<gid>[0-9]+):(?P<eid>[0-9]+)",
+):
+    """Objective button whose custom_id carries guild + enemy, so it keeps
+    working after the bot restarts (registered via add_dynamic_items)."""
+
+    def __init__(self, code: str, guild_id: int, enemy_id: int):
+        _key, label, style = OBJ_BUTTONS[code]
+        super().__init__(
+            discord.ui.Button(
+                label=label,
+                style=style,
+                custom_id=f"wobj:{code}:{guild_id}:{enemy_id}",
+            )
+        )
+        self.code = code
+        self.guild_id = guild_id
+        self.enemy_id = enemy_id
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match, /):
+        return cls(match["code"], int(match["gid"]), int(match["eid"]))
+
+    async def callback(self, interaction: discord.Interaction):
+        key = OBJ_BUTTONS[self.code][0]
+        await database.set_war_room_objective(self.guild_id, self.enemy_id, key)
+        label = OBJ_LABELS.get(key, key)
+        await interaction.response.send_message(
+            f"Objective set: **{label}**\nRun `/waradvice` for stack orders."
+        )
+
+
 class ObjectiveView(discord.ui.View):
     def __init__(self, guild_id: int, enemy_nation_id: int):
         super().__init__(timeout=None)
-        self.guild_id = guild_id
-        self.enemy_nation_id = enemy_nation_id
-
-    async def _set(self, interaction: discord.Interaction, key: str):
-        await database.set_war_room_objective(self.guild_id, self.enemy_nation_id, key)
-        await interaction.response.send_message(
-            f"Objective set: **{OBJ_LABELS.get(key, key)}**\nRun `/waradvice` for stack orders.",
-            ephemeral=False,
-        )
-
-    @discord.ui.button(label="Air → Blockade → Ground", style=discord.ButtonStyle.primary, custom_id="obj_abg")
-    async def abg(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._set(interaction, OBJ_AIR_BLOCKADE_GROUND)
-
-    @discord.ui.button(label="Air → Ground", style=discord.ButtonStyle.secondary, custom_id="obj_ag")
-    async def ag(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._set(interaction, OBJ_AIR_GROUND)
-
-    @discord.ui.button(label="Blockade → Ground", style=discord.ButtonStyle.secondary, custom_id="obj_bg")
-    async def bg(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._set(interaction, OBJ_BLOCKADE_GROUND)
-
-    @discord.ui.button(label="Ground focus", style=discord.ButtonStyle.secondary, custom_id="obj_g")
-    async def g(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._set(interaction, OBJ_GROUND)
+        for code in OBJ_BUTTONS:
+            self.add_item(ObjectiveButton(code, int(guild_id), int(enemy_nation_id)))
 
 
 class WarAdvisor(commands.Cog):
@@ -306,7 +324,7 @@ class WarAdvisor(commands.Cog):
 
     async def cog_load(self):
         # persistent buttons
-        self.bot.add_view(ObjectiveView(0, 0))  # placeholder; real ids in custom handlers via room
+        self.bot.add_dynamic_items(ObjectiveButton)
 
     @app_commands.command(name="waradvice", description="Stack MILCOM orders for this war room")
     @app_commands.describe(enemy="Enemy (optional in war room)")
@@ -363,8 +381,6 @@ class WarAdvisor(commands.Cog):
                 objective = OBJ_AIR_BLOCKADE_GROUND
 
             lines = _stack_orders(fighters, def_n, objective)
-            if inactive:
-                lines.insert(1, "_Enemy inactive 3d+ — still following objective, loot focus OK._")
 
             body = lines if isinstance(lines, str) else "\n".join(lines)
             if len(body) > 1900:

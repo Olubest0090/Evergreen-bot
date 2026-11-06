@@ -22,6 +22,10 @@ from utils.pw_api import PWApiClient
 
 load_dotenv()
 
+import sys  # noqa: E402
+
+sys.stdout.reconfigure(line_buffering=True)  # print() shows up in Render logs right away
+
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("evergreen-bot")
 

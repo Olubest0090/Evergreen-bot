@@ -23,6 +23,7 @@ CHANNEL_TYPE_CHOICES = [
 ]
 
 POLL_INTERVAL_SECONDS = 90
+MAX_COUNTER_DMS = 5  # auto-counter DMs per new defensive war
 
 
 def is_inactive(last_active_iso: str | None, days: int = 7) -> bool:
@@ -53,6 +54,7 @@ class Alerts(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._members_by_guild: dict = {}
         self.poll_wars.start()
 
     def cog_unload(self):
@@ -153,7 +155,7 @@ class Alerts(commands.Cog):
                 await interaction.followup.send(embed=embeds.error("No Alliance Set", "Set one with /alerts alliance."))
                 return
 
-            wars = await self.bot.pw_client.get_active_wars(alliance_id)
+            wars = await self.bot.pw_client.get_active_wars(alliance_id, fresh=True)
             defense_count = sum(1 for w in wars if w.get("_side") == "defense")
             offense_count = sum(1 for w in wars if w.get("_side") == "offense")
 
@@ -209,6 +211,7 @@ class Alerts(commands.Cog):
             except Exception as e:
                 print(f"[alerts] failed to fetch alliance {aid} for guild {guild_id}: {e}")
         wars = list(wars_by_id.values())
+        self._members_by_guild[int(guild_id)] = members
 
         # A defensive war is a "counter" if OUR member (the defender)
         # currently has an active offensive war against SOMEONE IN THE
@@ -354,13 +357,14 @@ class Alerts(commands.Cog):
     async def _dispatch_counter_requests(self, guild_id, config, war):
         attacker = war.get("attacker") or {}
         defender = war.get("defender") or {}
-        members = getattr(self, "_cached_members", None) or []
+        members = self._members_by_guild.get(int(guild_id), [])
 
         candidates = [
             m for m in members
             if m.get("id") != defender.get("id") and qualifies(m, attacker)
         ]
         candidates.sort(key=military_total, reverse=True)
+        candidates = candidates[:MAX_COUNTER_DMS]
 
         war_link = f"https://politicsandwar.com/nation/war/timeline/war={war['id']}"
         att_name = attacker.get("nation_name", "Unknown")
@@ -374,7 +378,10 @@ class Alerts(commands.Cog):
                 unlinked.append(m.get("nation_name", "Unknown"))
                 continue
 
-            member_obj = self.bot.get_user(discord_id) or await self.bot.fetch_user(discord_id)
+            try:
+                member_obj = self.bot.get_user(discord_id) or await self.bot.fetch_user(discord_id)
+            except discord.HTTPException:
+                member_obj = None
             if not member_obj:
                 unlinked.append(m.get("nation_name", "Unknown"))
                 continue
@@ -394,7 +401,7 @@ class Alerts(commands.Cog):
             try:
                 await member_obj.send(embed=embed)
                 sent += 1
-            except discord.Forbidden:
+            except (discord.Forbidden, discord.HTTPException):
                 unlinked.append(f"{m.get('nation_name', 'Unknown')} (DMs closed)")
 
         if unlinked:

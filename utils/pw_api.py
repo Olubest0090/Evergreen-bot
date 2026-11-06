@@ -3,6 +3,7 @@ Thin wrapper around the Politics & War v3 GraphQL API.
 """
 
 import os
+import time
 import asyncio
 import aiohttp
 
@@ -17,6 +18,8 @@ class PWApiClient:
     def __init__(self, session: aiohttp.ClientSession):
         self._session = session
         self._api_key = os.environ["PNW_API_KEY"]
+        self._cache: dict = {}
+        self._locks: dict = {}
 
     async def _query(self, query: str, variables: dict | None = None) -> dict:
         url = f"{PW_API_URL}?api_key={self._api_key}"
@@ -41,6 +44,20 @@ class PWApiClient:
                 continue
             raise PWApiError(msg)
         raise PWApiError(last_err or "PW API failed")
+
+    async def _cached(self, key, ttl: float, factory):
+        """Tiny TTL cache + de-dupe so overlapping loops share one API call."""
+        hit = self._cache.get(key)
+        if hit and time.monotonic() - hit[0] < ttl:
+            return hit[1]
+        lock = self._locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            hit = self._cache.get(key)
+            if hit and time.monotonic() - hit[0] < ttl:
+                return hit[1]
+            value = await factory()
+            self._cache[key] = (time.monotonic(), value)
+            return value
 
     async def get_nation(self, nation_id: int) -> dict | None:
         # Lighter query so /whois works again
@@ -160,6 +177,7 @@ class PWApiClient:
                 ships
                 spies
                 discord
+                last_active
                 cities { id }
                 pirate_economy
                 advanced_pirate_economy
@@ -374,7 +392,16 @@ class PWApiClient:
             n["total_infra"] = sum(c.get("infrastructure", 0) or 0 for c in (n.get("cities") or []))
         return nations
 
-    async def get_active_wars(self, alliance_id: int) -> list[dict]:
+    async def get_active_wars(self, alliance_id: int, fresh: bool = False) -> list[dict]:
+        """Cached ~100s so the alert loop and war-room loops share one call.
+        Pass fresh=True to force a live fetch."""
+        key = ("wars", int(alliance_id))
+        if fresh:
+            self._cache.pop(key, None)
+        wars = await self._cached(key, 100, lambda: self._get_active_wars_uncached(alliance_id))
+        return list(wars)
+
+    async def _get_active_wars_uncached(self, alliance_id: int) -> list[dict]:
         war_fields = """
               id
               war_type
@@ -413,7 +440,8 @@ class PWApiClient:
         data = await self._query(query, {"id": [alliance_id]})
         alliances = data["alliances"]["data"]
         if not alliances:
-            return []
+            # An empty answer is NOT "no wars": callers delete things based on this.
+            raise PWApiError(f"API returned no data for alliance {alliance_id}")
 
         wars = []
         seen_ids = set()

@@ -188,12 +188,13 @@ async def is_dnr_protected(bot, guild_id: int, alliance_id: int, nation_position
         return False
 
     top_alliances = await bot.pw_client.get_top_alliances(top_x)
-    return any(a["id"] == alliance_id for a in top_alliances)
+    return any(str(a["id"]) == str(alliance_id) for a in top_alliances)
 
 
 class Coalitions(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._dead_strikes: dict = {}
         self.sync_treaties.start()
         self.cleanup_dead_alliances.start()
 
@@ -585,7 +586,11 @@ class Coalitions(commands.Cog):
                         except Exception:
                             continue  # API hiccup, don't wrongly delete over a transient error
                         checked[aid] = result is not None
-                    if not checked[aid]:
+                        if checked[aid]:
+                            self._dead_strikes.pop(aid, None)
+                        else:
+                            self._dead_strikes[aid] = self._dead_strikes.get(aid, 0) + 1
+                    if not checked[aid] and self._dead_strikes.get(aid, 0) >= 3:
                         await database.remove_coalition_alliance(config["guild_id"], aid, row["bloc_type"])
                         removed_total += 1
             if removed_total:
@@ -605,6 +610,8 @@ class Coalitions(commands.Cog):
                 alliance_id = config.get("alliance_id")
                 if not alliance_id:
                     continue
+                if not config.get("auto_sync_treaties"):
+                    continue  # respect /bloc autosync (default is off)
                 await self._sync_guild_treaties(config["guild_id"], alliance_id)
         except Exception as e:
             print(f"[coalitions] treaty sync error: {e}")

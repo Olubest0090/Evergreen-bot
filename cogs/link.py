@@ -86,8 +86,8 @@ def format_turns_timer(turns_left: int) -> str:
     hours = turns_left * 2  # PnW turn = 2 hours
     if hours >= 24:
         d, h = divmod(hours, 24)
-        return f"**{turns_left} turns** (\~{d}d {h}h)"
-    return f"**{turns_left} turns** (\~{hours}h)"
+        return f"**{turns_left} turns** (\\~{d}d {h}h)"
+    return f"**{turns_left} turns** (\\~{hours}h)"
 
 
 def format_timer_seconds(seconds: int | float | None) -> str:
@@ -281,8 +281,8 @@ class WhoisView(View):
             f"**City timer:** {format_turns_timer(city_left)}\n"
             f"**Project timer:** {format_turns_timer(proj_left)} "
             f"| slots **{projects}/{max_projects}**\n"
-            f"**Beige:** {beige} turns" + (f" (\~{beige * 2}h)" if beige else "") + "\n"
-            f"**Vacation:** {vacation} turns" + (f" (\~{vacation * 2}h)" if vacation else "")
+            f"**Beige:** {beige} turns" + (f" (\\~{beige * 2}h)" if beige else "") + "\n"
+            f"**Vacation:** {vacation} turns" + (f" (\\~{vacation * 2}h)" if vacation else "")
         )
         embed = embeds.info("Nation Timers", text)
         await interaction.response.send_message(embed=embed, ephemeral=True)
