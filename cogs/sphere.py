@@ -22,7 +22,7 @@ class Sphere(commands.Cog):
         self.monitor.cancel()
 
     sphere=app_commands.Group(name="sphere",description="Federal Sphere administration")
-    alliance=sphere.create_group(name="alliance",description="Manage registered sphere alliances")
+    alliance=app_commands.Group(name="alliance",description="Manage registered sphere alliances",parent=sphere)
 
     async def _send_channel(self, channel_id: int | None, *, content: str | None=None, embed: discord.Embed | None=None):
         if not channel_id:
