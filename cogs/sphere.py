@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio
 import logging
+from datetime import datetime, timezone, timedelta
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -9,6 +10,27 @@ from utils import sphere_db
 
 log=logging.getLogger("evergreen.sphere")
 POLL_SECONDS=120
+
+
+
+def _inactive_7_days(last_active) -> bool:
+    """Return True when a valid last_active timestamp is at least 7 days old."""
+    if not last_active:
+        return False
+    try:
+        value = str(last_active).strip()
+        if value.endswith("Z"):
+            value = value[:-1] + "+00:00"
+        last = datetime.fromisoformat(value)
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        return (
+            datetime.now(timezone.utc) - last.astimezone(timezone.utc)
+            >= timedelta(days=7)
+        )
+    except (TypeError, ValueError):
+        log.warning("Could not parse last_active value: %r", last_active)
+        return False
 
 
 class Sphere(commands.Cog):
@@ -157,12 +179,30 @@ class Sphere(commands.Cog):
                     attacker=war.get("attacker") or {}; defender=war.get("defender") or {}
                     sphere_nation=attacker if side=="offense" else defender
                     opponent=defender if side=="offense" else attacker
+
+                    # Offensive: skip inactive opponents.
+                    # Defensive: skip inactive Sphere members.
+                    checked_nation = opponent if side == "offense" else sphere_nation
+                    if _inactive_7_days(checked_nation.get("last_active")):
+                        log.info(
+                            "Skipping %s alert for war %s: %s has been inactive for at least 7 days",
+                            side,
+                            war["id"],
+                            checked_nation.get("nation_name", "Unknown"),
+                        )
+                        await sphere_db.mark_war_alerted(
+                            guild_id, aid, int(war["id"]), field
+                        )
+                        continue
+
                     label="OFFENSIVE WAR" if side=="offense" else "DEFENSIVE WAR"
                     embed=discord.Embed(title=f"⚔️ Sphere {label}",color=discord.Color.orange() if side=="offense" else discord.Color.red())
                     embed.description=(f"**Sphere alliance:** {alliance['alliance_name']} (`{aid}`)\n"
                         f"**Sphere nation:** {sphere_nation.get('nation_name','Unknown')}\n"
                         f"**Opponent:** {opponent.get('nation_name','Unknown')}\n"
-                        f"**Opponent alliance ID:** {opponent.get('alliance_id') or 'None'}\n"
+                        f"**Opponent alliance:** "
+                        f"{(opponent.get('alliance') or {}).get('name') or 'Unknown'} "
+                        f"(`{opponent.get('alliance_id') or 'None'}`)\n"
                         f"**War type:** {war.get('war_type','Unknown')}\n"
                         f"**Turns left:** {war.get('turns_left','?')}\n"
                         f"[Open war](https://politicsandwar.com/nation/war/timeline/war={war['id']})")
