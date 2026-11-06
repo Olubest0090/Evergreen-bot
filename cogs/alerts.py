@@ -14,6 +14,7 @@ from discord.ext import commands, tasks
 from utils import database, embeds
 from cogs.counter import qualifies, military_total
 from utils.formatting import format_duration, military_line, nation_block
+from utils.spy_suspects import find_possible_spy_suspects
 
 CHANNEL_TYPE_CHOICES = [
     app_commands.Choice(name="Defensive Wars", value="defense_channel_id"),
@@ -425,91 +426,83 @@ class Alerts(commands.Cog):
         if not channel_id:
             return
 
-        nation_id = member["id"]
-        current_spies = member.get("spies", 0)
+        nation_id = int(member["id"])
+        current_spies = int(member.get("spies") or 0)
         last_spies = await database.get_last_spies(guild_id, nation_id)
 
-        reported = True
-        if last_spies is not None and current_spies < last_spies:
-            reported = False
-            channel = await self._get_channel(channel_id)
-            if channel:
-                discord_id = await database.get_discord_id_for_nation(nation_id)
-                ping = f"<@{discord_id}> " if discord_id else ""
+        if last_spies is None or current_spies >= last_spies:
+            await database.set_last_spies(guild_id, nation_id, current_spies)
+            return
 
-                score = member.get("score", 0)
-                min_score, max_score = score / 2.5, score * 2.5
+        channel = await self._get_channel(channel_id)
+        if not channel:
+            return
 
-                suspects_text = "Couldn't determine suspects."
-                suspects = []
-                try:
-                    candidates = await self.bot.pw_client.get_nations_in_score_range(min_score, max_score)
-                    now = datetime.now(timezone.utc)
-                    for c in candidates:
-                        if c.get("alliance_id") == our_alliance_id:
-                            continue
-                        last_active_raw = c.get("last_active")
-                        if not last_active_raw:
-                            continue
-                        try:
-                            last_active = datetime.fromisoformat(last_active_raw.replace("Z", "+00:00"))
-                        except Exception:
-                            continue
-                        if (now - last_active).total_seconds() <= 900:
-                            c["_last_active_dt"] = last_active
-                            suspects.append(c)
+        discord_id = await database.get_discord_id_for_nation(nation_id)
+        ping = f"<@{discord_id}> " if discord_id else ""
 
-                    # Most recently active first — the most likely spy
-                    # is whoever acted closest to the moment of the loss.
-                    suspects.sort(key=lambda s: s["_last_active_dt"], reverse=True)
-                except Exception as e:
-                    suspects = None
-                    suspect_error = str(e)
+        embed = embeds.warning(
+            "🕵️ Possible Espionage Loss",
+            f"**{member.get('nation_name', 'Unknown')}** lost spies: "
+            f"{last_spies} → {current_spies}.\n"
+            f"**Change:** -{last_spies - current_spies} spies.\n"
+            "Possible suspects are filtered by score range, active in-game treaties "
+            "and recent activity. This does not prove who performed the operation.",
+        )
 
-                embed = embeds.warning(
-                    "🕵️ Possible Espionage Loss",
-                    f"**{member.get('nation_name', 'Unknown')}** lost spies: "
-                    f"{last_spies} → {current_spies}.\n"
-                    f"This may indicate a successful enemy spy operation.",
+        try:
+            suspects = await find_possible_spy_suspects(
+                self.bot.pw_client,
+                member,
+            )
+        except Exception as exc:
+            suspects = None
+            suspect_error = str(exc)
+
+        if suspects is None:
+            embed.add_field(
+                name="Possible Suspects",
+                value=f"Could not complete suspect search: `{suspect_error[:900]}`",
+                inline=False,
+            )
+        elif not suspects:
+            embed.add_field(
+                name="Possible Suspects",
+                value=(
+                    "No qualifying nations found. Nations in the victim's alliance "
+                    "and active treaty alliances, plus nations not active within "
+                    "15 minutes, were excluded."
+                ),
+                inline=False,
+            )
+        else:
+            lines = [
+                f"[{nation.get('nation_name', 'Unknown')}]"
+                f"(https://politicsandwar.com/nation/id={nation.get('id')}) "
+                f"— *{(nation.get('alliance') or {}).get('name', 'None')}* "
+                f"(`{nation.get('alliance_id') or 'None'}`) "
+                f"— {format_duration(nation.get('last_active'))} ago"
+                for nation in suspects
+            ]
+
+            for index in range(0, len(lines), 10):
+                embed.add_field(
+                    name=(
+                        "Possible Suspects — most recently active first"
+                        if index == 0 else "\u200b"
+                    ),
+                    value="\n".join(lines[index:index + 10]),
+                    inline=False,
                 )
 
-                if suspects is None:
-                    embed.add_field(
-                        name="Possible Suspects", value=f"Error looking up suspects: `{suspect_error}`", inline=False
-                    )
-                elif not suspects:
-                    embed.add_field(
-                        name="Possible Suspects (defensive spy range, active in last 15 min)",
-                        value="None found.",
-                        inline=False,
-                    )
-                else:
-                    lines = [
-                        f"[{s['nation_name']}](https://politicsandwar.com/nation/id={s['id']}) "
-                        f"— *{(s.get('alliance') or {}).get('name', 'None')}* — "
-                        f"{format_duration(s.get('last_active'))} ago"
-                        for s in suspects
-                    ]
-                    # Split into embed fields of ~10 lines each so the
-                    # FULL list always fits (a field caps at 1024 chars;
-                    # multiple fields let us show everyone, not just a
-                    # truncated "+N more").
-                    chunk_size = 10
-                    for i in range(0, len(lines), chunk_size):
-                        chunk = lines[i : i + chunk_size]
-                        field_name = (
-                            "Possible Suspects (defensive spy range, active in last 15 min, most recent first)"
-                            if i == 0 else "\u200b"
-                        )
-                        embed.add_field(name=field_name, value="\n".join(chunk), inline=False)
+        try:
+            await channel.send(content=ping or None, embed=embed)
+        except discord.HTTPException:
+            return
 
-                await channel.send(content=ping or None, embed=embed)
-                reported = True
-
-        if reported:
-            await database.set_last_spies(guild_id, nation_id, current_spies)
-        # else: leave the old baseline in place so next cycle re-detects
-        # the same drop and retries, instead of silently losing the event.
+        # Only update after the alert was successfully delivered.
+        # A failed send will be retried on the next monitoring cycle.
+        await database.set_last_spies(guild_id, nation_id, current_spies)
 
 
 async def setup(bot: commands.Bot):

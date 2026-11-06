@@ -168,6 +168,7 @@ class PWApiClient:
               nations {
                 id
                 nation_name
+                alliance_id
                 leader_name
                 alliance_position
                 score
@@ -252,6 +253,7 @@ class PWApiClient:
             if other.get("id") and str(other["id"]) != our_id_str:
                 results.append({
                     "treaty_type": t.get("treaty_type"),
+                    "turns_left": t.get("turns_left"),
                     "other_alliance_id": int(other["id"]),
                     "other_alliance_name": other.get("name"),
                 })
@@ -340,9 +342,16 @@ class PWApiClient:
         return rows[0] if rows else None
 
     async def get_nations_in_score_range(self, min_score: float, max_score: float) -> list[dict]:
+        """Fetch every non-vacation-mode nation within the supplied score range."""
         query = """
-        query($min: Float, $max: Float) {
-          nations(min_score: $min, max_score: $max, first: 500, vmode: false) {
+        query($min: Float, $max: Float, $page: Int) {
+          nations(
+            min_score: $min,
+            max_score: $max,
+            first: 500,
+            page: $page,
+            vmode: false
+          ) {
             data {
               id
               nation_name
@@ -351,11 +360,62 @@ class PWApiClient:
               last_active
               score
             }
+            paginatorInfo {
+              currentPage
+              lastPage
+              hasMorePages
+              total
+            }
           }
         }
         """
-        data = await self._query(query, {"min": min_score, "max": max_score})
-        return data["nations"]["data"]
+
+        all_nations = []
+        page = 1
+        seen_pages = set()
+
+        while True:
+            if page in seen_pages:
+                raise RuntimeError(
+                    f"Nation pagination repeated page {page}; stopping to prevent an infinite loop."
+                )
+
+            seen_pages.add(page)
+
+            data = await self._query(
+                query,
+                {
+                    "min": min_score,
+                    "max": max_score,
+                    "page": page,
+                },
+            )
+
+            result = data.get("nations") or {}
+            batch = result.get("data") or []
+            pagination = result.get("paginatorInfo")
+
+            if pagination is None:
+                raise RuntimeError(
+                    "Politics & War API did not return paginatorInfo. "
+                    "Cannot guarantee a complete nation search."
+                )
+
+            all_nations.extend(batch)
+
+            if not pagination.get("hasMorePages"):
+                break
+
+            next_page = pagination.get("currentPage", page) + 1
+
+            if next_page <= page:
+                raise RuntimeError(
+                    "Politics & War API returned invalid pagination information."
+                )
+
+            page = next_page
+
+        return all_nations
 
 
     async def get_nations_for_raid(self, min_score: float, max_score: float) -> list[dict]:

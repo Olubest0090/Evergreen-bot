@@ -7,6 +7,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 from utils import sphere_db
+from utils.spy_suspects import find_possible_spy_suspects, format_activity_age
 
 log=logging.getLogger("evergreen.sphere")
 POLL_SECONDS=120
@@ -211,25 +212,114 @@ class Sphere(commands.Cog):
                         await sphere_db.mark_war_alerted(guild_id,aid,int(war["id"]),field)
                 except Exception:
                     log.exception("Failed processing sphere war %s",war.get("id"))
-            # Spy monitoring: a drop in a member's reported spy count creates
-            # one alert. First observation only establishes a baseline.
+            # Spy monitoring: detect spy losses and identify possible suspects.
             if cfg.get("spy_channel_id"):
                 for member in members:
                     try:
-                        nation_id=int(member["id"]); current=int(member.get("spies") or 0)
-                        previous=await sphere_db.get_spy_baseline(guild_id,nation_id)
-                        if previous is not None and current < previous:
-                            lost=previous-current
-                            e=discord.Embed(title="🕵️ Sphere Spy Activity Detected",color=discord.Color.dark_gold())
-                            e.description=(f"**Alliance:** {alliance['alliance_name']} (`{aid}`)\n"
-                                f"**Nation:** {member.get('nation_name','Unknown')} (`{nation_id}`)\n"
-                                f"**Reported spy count:** {previous} → {current}\n"
-                                f"**Change:** -{lost} spies\n"
-                                "A decrease was detected in the latest Politics & War data. This does not identify the attacker or prove which operation caused it.")
-                            await self._send_channel(cfg.get("spy_channel_id"),embed=e)
-                        await sphere_db.set_spy_baseline(guild_id,aid,nation_id,member.get("nation_name","Unknown"),current)
+                        nation_id = int(member["id"])
+                        current = int(member.get("spies") or 0)
+                        previous = await sphere_db.get_spy_baseline(
+                            guild_id,
+                            nation_id,
+                        )
+
+                        if previous is None or current >= previous:
+                            await sphere_db.set_spy_baseline(
+                                guild_id,
+                                aid,
+                                nation_id,
+                                member.get("nation_name", "Unknown"),
+                                current,
+                            )
+                            continue
+
+                        lost = previous - current
+                        embed = discord.Embed(
+                            title="🕵️ Sphere Spy Activity Detected",
+                            color=discord.Color.dark_gold(),
+                        )
+                        embed.description = (
+                            f"**Alliance:** {alliance['alliance_name']} (`{aid}`)\n"
+                            f"**Nation:** {member.get('nation_name', 'Unknown')} "
+                            f"(`{nation_id}`)\n"
+                            f"**Reported spy count:** {previous} → {current}\n"
+                            f"**Change:** -{lost} spies\n"
+                            "Possible suspects are filtered by score range, active "
+                            "in-game treaties and recent activity. This does not "
+                            "prove who performed the operation."
+                        )
+
+                        try:
+                            suspects = await find_possible_spy_suspects(
+                                self.bot.pw_client,
+                                member,
+                            )
+                        except Exception as exc:
+                            suspects = None
+                            suspect_error = str(exc)
+
+                        if suspects is None:
+                            embed.add_field(
+                                name="Possible Suspects",
+                                value=(
+                                    "Could not complete suspect search: "
+                                    f"`{suspect_error[:900]}`"
+                                ),
+                                inline=False,
+                            )
+                        elif not suspects:
+                            embed.add_field(
+                                name="Possible Suspects",
+                                value=(
+                                    "No qualifying nations found. Nations in the "
+                                    "victim's alliance and active treaty alliances, "
+                                    "plus nations not active within 15 minutes, "
+                                    "were excluded."
+                                ),
+                                inline=False,
+                            )
+                        else:
+                            lines = [
+                                f"[{nation.get('nation_name', 'Unknown')}]"
+                                f"(https://politicsandwar.com/nation/id={nation.get('id')}) "
+                                f"— *{(nation.get('alliance') or {}).get('name', 'None')}* "
+                                f"(`{nation.get('alliance_id') or 'None'}`) "
+                                f"— {format_activity_age(nation.get('last_active'))}"
+                                for nation in suspects
+                            ]
+
+                            for index in range(0, len(lines), 10):
+                                embed.add_field(
+                                    name=(
+                                        "Possible Suspects — most recently active first"
+                                        if index == 0 else "\u200b"
+                                    ),
+                                    value="\n".join(lines[index:index + 10]),
+                                    inline=False,
+                                )
+
+                        sent = await self._send_channel(
+                            cfg.get("spy_channel_id"),
+                            embed=embed,
+                        )
+
+                        # Keep the old baseline if Discord delivery fails,
+                        # so the same spy loss is retried next cycle.
+                        if sent:
+                            await sphere_db.set_spy_baseline(
+                                guild_id,
+                                aid,
+                                nation_id,
+                                member.get("nation_name", "Unknown"),
+                                current,
+                            )
+
                     except Exception:
-                        log.exception("Spy tracking failed for alliance %s",aid)
+                        log.exception(
+                            "Spy tracking failed for alliance %s",
+                            aid,
+                        )
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Sphere(bot))
