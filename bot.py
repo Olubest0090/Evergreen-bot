@@ -1,15 +1,13 @@
 """
 Evergreen MILCOM Bot — entry point.
 
-Deployed on Render as a free Web Service. Render's free tier only sleeps
-web services after 15 minutes with no HTTP traffic — so this file runs
-a tiny web server alongside the Discord bot purely to answer keep-alive
-pings (from UptimeRobot or similar) and stop it from sleeping.
+This replacement only adds the Federal Sphere cog to the existing startup
+list. Existing cogs and startup behavior are preserved.
 """
-
 import asyncio
 import logging
 import os
+import sys
 
 import aiohttp
 from aiohttp import web
@@ -21,11 +19,7 @@ from utils import database
 from utils.pw_api import PWApiClient
 
 load_dotenv()
-
-import sys  # noqa: E402
-
-sys.stdout.reconfigure(line_buffering=True)  # print() shows up in Render logs right away
-
+sys.stdout.reconfigure(line_buffering=True)
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("evergreen-bot")
 
@@ -49,6 +43,7 @@ INITIAL_COGS = (
     "cogs.ai",
     "cogs.waradvisor",
     "cogs.simulate",
+    "cogs.sphere",
 )
 
 
@@ -61,19 +56,15 @@ class EvergreenBot(commands.Bot):
     async def setup_hook(self) -> None:
         await database.init_client()
         log.info("Supabase client ready")
-
         self.http_session = aiohttp.ClientSession()
         self.pw_client = PWApiClient(self.http_session)
-
         for cog in INITIAL_COGS:
             await self.load_extension(cog)
             log.info("Loaded cog: %s", cog)
-
         try:
             await self.load_extension("cogs.cleanup_timer")
         except Exception:
             log.exception("cleanup_timer failed to load")
-
         if TEST_GUILD:
             self.tree.copy_global_to(guild=TEST_GUILD)
             await self.tree.sync(guild=TEST_GUILD)
@@ -81,7 +72,6 @@ class EvergreenBot(commands.Bot):
         else:
             await self.tree.sync()
             log.info("Synced commands globally (can take up to ~1 hour to appear)")
-
         asyncio.create_task(self._start_webserver())
 
     async def _start_webserver(self) -> None:
