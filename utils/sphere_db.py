@@ -93,3 +93,27 @@ async def was_war_alerted(guild_id: int, alliance_id: int, war_id: int, field: s
         await _check(r,(200,))
         rows=await r.json()
         return bool(rows and rows[0].get(field))
+
+
+async def find_recent_offensive_against(guild_id: int, nation_id: int, since_iso: str) -> dict | None:
+    """Look for a sphere war, seen since `since_iso`, where `nation_id` was the
+    DEFENDER — i.e. a nation in one of our registered sphere alliances attacked
+    them. Used to label an incoming defensive war as a likely counter-attack.
+
+    Returns the most recently seen matching war row, or None if there isn't one.
+    `since_iso` should be a recent window (the monitor refreshes every active
+    war's last_seen_at each cycle, so an ended war's last_seen_at stops moving
+    forward and naturally falls out of a short window).
+    """
+    params = {
+        "guild_id": f"eq.{guild_id}",
+        "defender_nation_id": f"eq.{nation_id}",
+        "last_seen_at": f"gte.{since_iso}",
+        "select": "war_id,alliance_name,attacker_name,attacker_alliance_id,last_seen_at",
+        "order": "last_seen_at.desc",
+        "limit": "1",
+    }
+    async with database._session.get(_base()+"/sphere_wars", params=params) as r:
+        await _check(r, (200,))
+        rows = await r.json()
+        return rows[0] if rows else None

@@ -11,6 +11,11 @@ from utils.spy_suspects import find_possible_spy_suspects, format_activity_age
 
 log=logging.getLogger("evergreen.sphere")
 POLL_SECONDS=120
+# How far back to look when deciding whether an incoming defensive war is a
+# "counter" (the attacker defending against a sphere nation that hit them
+# first). Several poll cycles wide so a war isn't missed between checks, but
+# short enough that an ended war's frozen last_seen_at falls out of it.
+COUNTER_LOOKBACK_SECONDS = POLL_SECONDS * 5
 
 
 
@@ -155,6 +160,31 @@ class Sphere(commands.Cog):
     async def before_monitor(self):
         await self.bot.wait_until_ready()
 
+    async def _counter_note(self, guild_id: int, opponent_nation_id: int) -> str:
+        """For a defensive war, describe whether the opponent is likely
+        counter-attacking because a sphere nation (us or an ally) hit them
+        first. Never raises: a lookup failure is reported in the text instead
+        of silently showing nothing."""
+        since = (
+            datetime.now(timezone.utc) - timedelta(seconds=COUNTER_LOOKBACK_SECONDS)
+        ).isoformat()
+        try:
+            hit = await sphere_db.find_recent_offensive_against(
+                guild_id, opponent_nation_id, since
+            )
+        except Exception:
+            log.exception(
+                "Counter-attack lookup failed for opponent nation %s",
+                opponent_nation_id,
+            )
+            return "Unknown (lookup failed)"
+        if not hit:
+            return "No — not currently fighting a sphere nation we can see"
+        return (
+            f"Likely — they're defending against **{hit.get('attacker_name','a sphere nation')}** "
+            f"(*{hit.get('alliance_name','our sphere')}*)"
+        )
+
     async def _monitor_guild(self,guild_id: int):
         alliances=await sphere_db.list_alliances(guild_id)
         alliances=[a for a in alliances if a.get("active",True)]
@@ -198,15 +228,19 @@ class Sphere(commands.Cog):
 
                     label="OFFENSIVE WAR" if side=="offense" else "DEFENSIVE WAR"
                     embed=discord.Embed(title=f"⚔️ Sphere {label}",color=discord.Color.orange() if side=="offense" else discord.Color.red())
-                    embed.description=(f"**Sphere alliance:** {alliance['alliance_name']} (`{aid}`)\n"
+                    description=(f"**Sphere alliance:** {alliance['alliance_name']} (`{aid}`)\n"
                         f"**Sphere nation:** {sphere_nation.get('nation_name','Unknown')}\n"
                         f"**Opponent:** {opponent.get('nation_name','Unknown')}\n"
                         f"**Opponent alliance:** "
                         f"{(opponent.get('alliance') or {}).get('name') or 'Unknown'} "
                         f"(`{opponent.get('alliance_id') or 'None'}`)\n"
                         f"**War type:** {war.get('war_type','Unknown')}\n"
-                        f"**Turns left:** {war.get('turns_left','?')}\n"
-                        f"[Open war](https://politicsandwar.com/nation/war/timeline/war={war['id']})")
+                        f"**Turns left:** {war.get('turns_left','?')}\n")
+                    if side == "defense" and opponent.get("id"):
+                        counter_note = await self._counter_note(guild_id, int(opponent["id"]))
+                        description += f"**Counter:** {counter_note}\n"
+                    description += f"[Open war](https://politicsandwar.com/nation/war/timeline/war={war['id']})"
+                    embed.description=description
                     sent=await self._send_channel(cfg.get(channel_key),embed=embed)
                     if sent:
                         await sphere_db.mark_war_alerted(guild_id,aid,int(war["id"]),field)
