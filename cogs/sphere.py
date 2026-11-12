@@ -16,6 +16,10 @@ POLL_SECONDS=120
 # first). Several poll cycles wide so a war isn't missed between checks, but
 # short enough that an ended war's frozen last_seen_at falls out of it.
 COUNTER_LOOKBACK_SECONDS = POLL_SECONDS * 5
+# Pause after every spy-suspect search (it can cost many Politics & War API
+# pages) so two spy losses landing in the same monitor cycle don't fire two
+# heavy searches back to back and exhaust the API's rate limit.
+SPY_SUSPECT_SEARCH_GAP_SECONDS = 5
 
 
 
@@ -291,6 +295,12 @@ class Sphere(commands.Cog):
                         except Exception as exc:
                             suspects = None
                             suspect_error = str(exc)
+
+                        # Brief pause after every suspect search (it can cost
+                        # many PW API pages) so back-to-back spy losses in the
+                        # same cycle don't immediately pile another heavy
+                        # search on top of one that just ran.
+                        await asyncio.sleep(SPY_SUSPECT_SEARCH_GAP_SECONDS)
 
                         if suspects is None:
                             embed.add_field(

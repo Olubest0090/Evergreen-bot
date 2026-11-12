@@ -100,9 +100,13 @@ async def find_possible_spy_suspects(pw_client, victim):
         if active and other_id:
             excluded_alliances.add(int(other_id))
 
-    # Defensive score range.
-    minimum_score = victim_score / 2.5
-    maximum_score = victim_score * 2.5
+    # Defensive score range. Kept at 2x rather than wider: a wider band pulls
+    # in thousands of irrelevant nations and costs many extra API pages per
+    # search, which is what causes rate-limit failures when two spy losses
+    # land in the same monitor cycle. Nobody realistically spies a nation
+    # 2.5x their own size anyway, so this costs nothing in suspect quality.
+    minimum_score = victim_score / 2.0
+    maximum_score = victim_score * 2.0
 
     # This method must retrieve every pagination page.
     candidates = await pw_client.get_nations_in_score_range(
