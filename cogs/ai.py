@@ -6,15 +6,21 @@ Stage 1 upgrade:
   * New system prompts (shared rules + tactical / casual mode)
   * Per-channel conversation memory (last few messages, in RAM, expires)
   * Current Groq models (openai/gpt-oss-120b, falling back to openai/gpt-oss-20b)
+
+Stage 2 upgrade:
+  * Knowledge is chunked and ranked against the question (no more "newest 12k chars")
+  * War-room brief adds room objective/orders, the speaker's assignment, recent attacks
+    and enemy status
 """
 
 import asyncio
 import json
+import math
 import os
 import logging
 import re
 import time
-from collections import deque
+from collections import Counter, deque
 
 import aiohttp
 import discord
@@ -44,8 +50,19 @@ GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 GROQ_FALLBACK_MODEL = os.environ.get("GROQ_FALLBACK_MODEL", "openai/gpt-oss-20b")
 GROQ_MAX_TOKENS = 1500  # gpt-oss spends part of this on reasoning
-MAX_KNOWLEDGE_CHARS = 12_000
+MAX_KNOWLEDGE_CHARS = 4_000       # max knowledge text sent with one question
 MAX_REPLY_CHARS = 600
+
+# Knowledge retrieval
+KNOWLEDGE_FETCH_ROWS = 150          # newest rows pulled from Supabase
+KNOWLEDGE_CHUNK_CHARS = 700         # size of one searchable chunk
+KNOWLEDGE_MAX_CHUNKS = 8            # chunks sent per question
+KNOWLEDGE_INDEX_MAX_CHARS = 300_000  # safety cap on the in-memory index
+KNOWLEDGE_CACHE_TTL = 300           # seconds before the index is rebuilt
+
+# War-room brief
+WAR_CTX_MAX_CHARS = 4_000
+WAR_RECENT_ATTACKS = 5
 
 # Conversation memory (per channel, RAM only — resets when the bot restarts)
 HISTORY_MAX_MESSAGES = 6
@@ -100,6 +117,10 @@ SYSTEM_TACTICAL = (
     "- Check MAP before recommending (airstrike and naval cost 4, ground 3, missile 8, nuke 12).\n"
     "- Treat the war-room context as truth for this war. If it says the speaker has no linked "
     "nation or there is no active war, say so and give general stack advice only.\n"
+    "- If the context lists room orders or the speaker's assigned order, follow them. If the "
+    "speaker's plan goes against them, say so briefly.\n"
+    "- Use the recent attacks to judge momentum (who holds control, who is winning), "
+    "but don't recite the list.\n"
 )
 
 SYSTEM_CASUAL = (
@@ -118,6 +139,219 @@ _TACTICAL_RE = re.compile(
 
 def _is_tactical(question: str) -> bool:
     return bool(_TACTICAL_RE.search(question or ""))
+
+
+# ---------------------------------------------------------------------------
+# Knowledge retrieval (chunk + rank, no database changes)
+# ---------------------------------------------------------------------------
+
+_WORD_RE = re.compile(r"[a-z0-9]+")
+_PW_SHORT_TERMS = frozenset({"aa", "gc", "ma", "ia", "fa", "ea", "vm", "ww"})
+_STOPWORDS = frozenset(
+    "the and for with from that this these those what which who whom how when where why "
+    "are was were been being have has had can could will would should shall may might must "
+    "not yes you your yours our ours his her him its they them their there here than then "
+    "just about into over under out also any some all more most other such only own same "
+    "too very bro hey hello please tell give show know need want get got make think let like "
+    "does did doing done but nor yet one two".split()
+)
+
+
+def _keywords(text: str) -> list[str]:
+    """Lowercase search terms from text, minus filler words."""
+    words = _WORD_RE.findall((text or "").lower())
+    return [
+        w for w in words
+        if (len(w) >= 3 and w not in _STOPWORDS) or w in _PW_SHORT_TERMS
+    ]
+
+
+def _split_chunks(text: str, size: int = KNOWLEDGE_CHUNK_CHARS) -> list[str]:
+    """Split text into chunks of at most `size` chars, preferring line breaks."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    if len(text) <= size:
+        return [text]
+    chunks: list[str] = []
+    cur = ""
+    for para in (p.strip() for p in text.splitlines()):
+        if not para:
+            continue
+        while len(para) > size:
+            cut = para.rfind(" ", 0, size)
+            if cut < size // 2:
+                cut = size
+            piece, para = para[:cut].strip(), para[cut:].strip()
+            if cur:
+                chunks.append(cur)
+                cur = ""
+            if piece:
+                chunks.append(piece)
+        if not para:
+            continue
+        if cur and len(cur) + 1 + len(para) > size:
+            chunks.append(cur)
+            cur = para
+        else:
+            cur = f"{cur}\n{para}" if cur else para
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def build_knowledge_index(rows: list[dict]) -> list[dict]:
+    """Turn ai_knowledge rows (newest first) into searchable chunks."""
+    index: list[dict] = []
+    seen: set[str] = set()
+    total = 0
+    last = max(len(rows) - 1, 1)
+    for i, row in enumerate(rows):
+        content = (row.get("content") or "").strip()
+        if not content:
+            continue
+        label = str(row.get("url") or row.get("source") or "note")[:80]
+        recency = 1.0 - (i / last)  # newest row = 1.0, oldest = 0.0
+        for piece in _split_chunks(content):
+            if piece in seen:
+                continue
+            seen.add(piece)
+            total += len(piece)
+            if total > KNOWLEDGE_INDEX_MAX_CHARS:
+                return index
+            index.append({
+                "text": piece,
+                "label": label,
+                "recency": recency,
+                "tf": Counter(_keywords(piece)),
+            })
+    return index
+
+
+def rank_knowledge(
+    index: list[dict],
+    question: str,
+    *,
+    max_chars: int = MAX_KNOWLEDGE_CHARS,
+    max_chunks: int = KNOWLEDGE_MAX_CHUNKS,
+) -> list[str]:
+    """Most relevant chunks for the question, best first, as '[label] text' blocks."""
+    terms = set(_keywords(question))
+    if not terms or not index:
+        return []
+    n = len(index)
+    df = {t: sum(1 for c in index if t in c["tf"]) for t in terms}
+    scored = []
+    for c in index:
+        score = 0.0
+        for t in terms:
+            tf = c["tf"].get(t, 0)
+            if tf:
+                idf = math.log(1 + n / (1 + df[t]))
+                score += idf * (tf * 2.5) / (tf + 1.5)
+        if score > 0:
+            scored.append((score * (1 + 0.15 * c["recency"]), c))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+
+    out: list[str] = []
+    used = 0
+    for _, c in scored:
+        block = f"[{c['label']}] {c['text']}"
+        if not out and len(block) > max_chars:
+            block = block[:max_chars]
+        if used + len(block) > max_chars:
+            continue
+        out.append(block)
+        used += len(block)
+        if len(out) >= max_chunks:
+            break
+    return out
+
+
+# ---------------------------------------------------------------------------
+# War-room brief helpers
+# ---------------------------------------------------------------------------
+
+_ATTACK_LABELS = {
+    "AIRVINFRA": "airstrike -> infra",
+    "AIRVSOLDIERS": "airstrike -> soldiers",
+    "AIRVTANKS": "airstrike -> tanks",
+    "AIRVMONEY": "airstrike -> money",
+    "AIRVSHIPS": "airstrike -> ships",
+    "AIRVAIR": "airstrike -> aircraft",
+    "GROUND": "ground",
+    "NAVAL": "naval",
+    "MISSILE": "missile",
+    "MISSILEFAIL": "missile (failed)",
+    "NUKE": "nuke",
+    "NUKEFAIL": "nuke (failed)",
+    "FORTIFY": "fortify",
+}
+_SUCCESS_LABELS = {0: "utter failure", 1: "pyrrhic", 2: "moderate", 3: "IMMENSE"}
+
+
+def _summarize_attacks(attacks: list[dict], our_id: int | None, limit: int = WAR_RECENT_ATTACKS) -> str:
+    """Last few attacks of a war, oldest first, one short line each."""
+    ordered = sorted(attacks or [], key=lambda a: a.get("date") or "")[-limit:]
+    lines = []
+    for a in ordered:
+        t = str(a.get("type") or "").upper().replace(" ", "_")
+        label = _ATTACK_LABELS.get(t, t.lower() or "attack")
+        try:
+            actor = int(a.get("att_id") or 0)
+        except (TypeError, ValueError):
+            actor = 0
+        who = "YOU" if our_id and actor == int(our_id) else "ENEMY"
+        parts = [f"{who} {label}"]
+        try:
+            success = int(a["success"]) if a.get("success") is not None else None
+        except (TypeError, ValueError):
+            success = None
+        if success in _SUCCESS_LABELS:
+            parts.append(_SUCCESS_LABELS[success])
+        try:
+            infra = float(a.get("infradestroyed") or 0)
+            loot = float(a.get("moneystolen") or 0)
+        except (TypeError, ValueError):
+            infra = loot = 0.0
+        if infra > 0:
+            parts.append(f"infra -{infra:,.0f}")
+        if loot > 0:
+            parts.append(f"loot ${loot:,.0f}")
+        lines.append("- " + ", ".join(parts))
+    return "\n".join(lines)
+
+
+def _parse_assignments(raw) -> dict:
+    """order_assignments may come back as a dict or as a JSON string."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+    return {}
+
+
+def _room_orders_block(room: dict, our_id: int | None) -> list[str]:
+    """Objective, last orders and the speaker's own assignment for this war room."""
+    out = []
+    objective = (room.get("objective") or "").strip()
+    if objective:
+        out.append(f"ROOM OBJECTIVE: {objective[:300]}")
+    orders = (room.get("last_orders") or "").strip()
+    if orders:
+        out.append(f"LAST MILCOM ORDERS (whole room):\n{orders[:600]}")
+    assign = _parse_assignments(room.get("order_assignments"))
+    if our_id and assign:
+        mine = assign.get(str(our_id))
+        if mine is None:
+            mine = assign.get(our_id)
+        if mine:
+            out.append(f"SPEAKER'S ASSIGNED ORDER: {str(mine)[:200]}")
+    return out
 
 
 def _extract_urls(text: str) -> list[str]:
@@ -538,6 +772,11 @@ async def _war_room_tactical_context(bot, channel_id: int, author_id: int) -> st
             f"planes={enemy.get('aircraft')} ships={enemy.get('ships')} "
             f"missiles={enemy.get('missiles')} nukes={enemy.get('nukes')}"
         )
+        lines.append(
+            f"ENEMY STATUS: cities={len(enemy.get('cities') or [])} "
+            f"spies={enemy.get('spies')} beige_turns={enemy.get('beige_turns')} "
+            f"vm_turns={enemy.get('vacation_mode_turns')} last_active={enemy.get('last_active')}"
+        )
 
         our_id = await database.get_nation_for_user(author_id)
         our = await client.get_nation(int(our_id)) if our_id else None
@@ -549,6 +788,8 @@ async def _war_room_tactical_context(bot, channel_id: int, author_id: int) -> st
             )
         else:
             lines.append("SPEAKER has no linked nation — give general stack advice only.")
+
+        lines.extend(_room_orders_block(room, int(our_id) if our_id else None))
 
         war = None
         if our:
@@ -573,9 +814,11 @@ async def _war_room_tactical_context(bot, channel_id: int, author_id: int) -> st
                 enemy_res = int(war.get("att_resistance") or 100)
             lines.append(
                 f"THIS WAR id={war.get('id')} type={war.get('war_type')} "
+                f"turns_left={war.get('turns_left')} "
                 f"MAP you={our_map}/12 enemy={enemy_map}/12 "
                 f"Res you={our_res} enemy={enemy_res}"
             )
+            attacks = []
             try:
                 attacks = await client.get_war_attacks(int(war["id"]))
                 controls = infer_controls_from_attacks(attacks or [], att_id)
@@ -595,6 +838,9 @@ async def _war_room_tactical_context(bot, channel_id: int, author_id: int) -> st
             if controls.blockade_def:
                 ctrl.append("ENEMY blockades you")
             lines.append("Controls: " + (", ".join(ctrl) if ctrl else "none"))
+            recent = _summarize_attacks(attacks, att_id)
+            if recent:
+                lines.append("Recent attacks (oldest first):\n" + recent)
 
             our_f = Force(
                 soldiers=int(our.get("soldiers") or 0),
@@ -663,6 +909,8 @@ class AI(commands.Cog):
         self.bot = bot
         # channel_id -> deque of (monotonic_ts, role, content); RAM only
         self._history: dict[int, deque] = {}
+        # guild_id -> (monotonic_ts, knowledge chunk index); RAM only
+        self._kb_cache: dict[int, tuple[float, list[dict]]] = {}
         log.warning(
             "[ai] AI cog loaded provider=%s groq_model=%s fallback=%s",
             os.environ.get("AI_PROVIDER", "groq"),
@@ -701,25 +949,26 @@ class AI(commands.Cog):
 
     # ----- knowledge ------------------------------------------------------
 
-    async def _knowledge_context(self, guild_id: int) -> str:
-        try:
-            rows = await database.list_ai_knowledge(guild_id, limit=40)
-        except Exception:
-            return "(Knowledge store unavailable.)"
-        if not rows:
+    async def _knowledge_context(self, guild_id: int, question: str = "") -> str:
+        """Most relevant stored notes for this question (chunked + ranked)."""
+        now = time.monotonic()
+        cached = self._kb_cache.get(guild_id)
+        if cached and now - cached[0] <= KNOWLEDGE_CACHE_TTL:
+            index = cached[1]
+        else:
+            try:
+                rows = await database.list_ai_knowledge(guild_id, limit=KNOWLEDGE_FETCH_ROWS)
+            except Exception:
+                return "(Knowledge store unavailable.)"
+            index = build_knowledge_index(rows or [])
+            if index:  # don't cache an empty result (could be a transient DB error)
+                self._kb_cache[guild_id] = (now, index)
+        if not index:
             return "(No alliance knowledge stored yet.)"
-        chunks, total = [], 0
-        for r in rows:
-            piece = (r.get("content") or "").strip()
-            if not piece:
-                continue
-            src = r.get("source") or "note"
-            block = f"[{src}] {piece}\n"
-            if total + len(block) > MAX_KNOWLEDGE_CHARS:
-                break
-            chunks.append(block)
-            total += len(block)
-        return "\n".join(chunks) if chunks else "(No alliance knowledge stored yet.)"
+        picked = rank_knowledge(index, question)
+        if not picked:
+            return "(No stored alliance notes matched this question.)"
+        return "\n\n".join(picked)
 
     # ----- answering ------------------------------------------------------
 
@@ -732,16 +981,18 @@ class AI(commands.Cog):
         channel_id: int | None = None,
         author_id: int | None = None,
     ) -> str:
-        knowledge = await self._knowledge_context(guild_id)
+        knowledge = await self._knowledge_context(guild_id, question)
         live = await _live_pw_context(self.bot, guild_id, question)
         war_ctx = ""
         if channel_id and author_id:
             war_ctx = await _war_room_tactical_context(self.bot, channel_id, author_id)
+            if len(war_ctx) > WAR_CTX_MAX_CHARS:
+                war_ctx = war_ctx[:WAR_CTX_MAX_CHARS] + "\n…(brief trimmed)"
 
         system = SYSTEM_CORE + (SYSTEM_TACTICAL if _is_tactical(question) else SYSTEM_CASUAL)
 
         user = (
-            f"Alliance knowledge (optional context):\n{knowledge}\n\n"
+            f"Alliance knowledge (notes most relevant to this question):\n{knowledge}\n\n"
             f"Live game data:\n{live or '(none)'}\n\n"
             f"War room context:\n{war_ctx or '(not a war room)'}\n\n"
             f"{author} says:\n{question}"
@@ -862,6 +1113,7 @@ class AI(commands.Cog):
                 content=body[:15000],
                 url=urls[0] if urls else None,
             )
+            self._kb_cache.pop(message.guild.id, None)
             await message.add_reaction("✅")
         except Exception as e:
             print(f"[ai] knowledge ingest failed: {e}")
