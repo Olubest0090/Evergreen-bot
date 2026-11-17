@@ -11,6 +11,12 @@ Stage 2 upgrade:
   * Knowledge is chunked and ranked against the question (no more "newest 12k chars")
   * War-room brief adds room objective/orders, the speaker's assignment, recent attacks
     and enemy status
+
+Stage 3 upgrade:
+  * Stack awareness: finds every Evergreen member fighting the same enemy, loads their
+    live wars, simulates odds / expected enemy losses and advises the whole stack
+    (same logic as /waradvice). Works in war rooms and in any other channel.
+  * Short-lived cache (utils/pw_cache.py) so loading a whole stack doesn't hit P&W limits
 """
 
 import asyncio
@@ -27,6 +33,7 @@ import discord
 from discord.ext import commands
 
 from utils import database
+from utils.pw_cache import CachedPWClient
 from utils.battle_sim import (
     Force, ControlState, advice_for_war, infer_controls_from_attacks,
     simulate_air, simulate_ground, simulate_naval,
@@ -61,7 +68,9 @@ KNOWLEDGE_INDEX_MAX_CHARS = 300_000  # safety cap on the in-memory index
 KNOWLEDGE_CACHE_TTL = 300           # seconds before the index is rebuilt
 
 # War-room brief
-WAR_CTX_MAX_CHARS = 4_000
+WAR_CTX_MAX_CHARS = 6_000
+STACK_MAX_FIGHTERS = 6
+STACK_CTX_MAX_CHARS = 3_000
 WAR_RECENT_ATTACKS = 5
 
 # Conversation memory (per channel, RAM only — resets when the bot restarts)
@@ -119,6 +128,9 @@ SYSTEM_TACTICAL = (
     "nation or there is no active war, say so and give general stack advice only.\n"
     "- If the context lists room orders or the speaker's assigned order, follow them. If the "
     "speaker's plan goes against them, say so briefly.\n"
+    "- If a STACK block is present, advise the speaker's own next action with the other "
+    "members in mind: who should take air, naval or ground, and avoid two members doing the "
+    "same job. Only name members that appear in the data.\n"
     "- Use the recent attacks to judge momentum (who holds control, who is winning), "
     "but don't recite the list.\n"
 )
@@ -335,23 +347,303 @@ def _parse_assignments(raw) -> dict:
     return {}
 
 
-def _room_orders_block(room: dict, our_id: int | None) -> list[str]:
+def _room_orders_block(room: dict, our_id: int | None, include_last_orders: bool = True) -> list[str]:
     """Objective, last orders and the speaker's own assignment for this war room."""
     out = []
     objective = (room.get("objective") or "").strip()
     if objective:
         out.append(f"ROOM OBJECTIVE: {objective[:300]}")
     orders = (room.get("last_orders") or "").strip()
-    if orders:
-        out.append(f"LAST MILCOM ORDERS (whole room):\n{orders[:600]}")
+    if orders and include_last_orders:
+        out.append(f"LAST MILCOM ORDERS (whole room, posted after the last attack):\n{orders[:600]}")
     assign = _parse_assignments(room.get("order_assignments"))
     if our_id and assign:
         mine = assign.get(str(our_id))
         if mine is None:
             mine = assign.get(our_id)
+        if isinstance(mine, dict):
+            mine = mine.get("action") or ""
         if mine:
-            out.append(f"SPEAKER'S ASSIGNED ORDER: {str(mine)[:200]}")
+            out.append(f"SPEAKER'S ASSIGNED ORDER (from the last stack call): {str(mine)[:200]}")
     return out
+
+
+# ---------------------------------------------------------------------------
+# Stack advice: every Evergreen member fighting the same enemy
+# ---------------------------------------------------------------------------
+
+def _cached_client(bot):
+    """The bot's P&W client wrapped in a short-lived cache (one wrapper per bot)."""
+    raw = getattr(bot, "pw_client", None)
+    if raw is None:
+        return None
+    cached = getattr(bot, "_ai_pw_cache", None)
+    if cached is None or cached.wrapped is not raw:
+        cached = CachedPWClient(raw)
+        try:
+            bot._ai_pw_cache = cached
+        except Exception:
+            pass
+    return cached
+
+
+def _in_war_with(nation: dict | None, enemy_id: int) -> bool:
+    """True if this nation has an active war against enemy_id."""
+    if not nation:
+        return False
+    try:
+        nid = int(nation["id"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    for w in (nation.get("offensive_wars") or []) + (nation.get("defensive_wars") or []):
+        if (w.get("turns_left") or 0) <= 0:
+            continue
+        try:
+            pair = {int(w.get("att_id") or 0), int(w.get("def_id") or 0)}
+        except (TypeError, ValueError):
+            continue
+        if pair == {nid, int(enemy_id)}:
+            return True
+    return False
+
+
+def _controls_text(c) -> str:
+    bits = []
+    if getattr(c, "air_sup_att", False):
+        bits.append("has AS")
+    if getattr(c, "air_sup_def", False):
+        bits.append("ENEMY has AS")
+    if getattr(c, "ground_ctrl_att", False):
+        bits.append("has GC")
+    if getattr(c, "ground_ctrl_def", False):
+        bits.append("ENEMY has GC")
+    if getattr(c, "blockade_att", False):
+        bits.append("blockading enemy")
+    if getattr(c, "blockade_def", False):
+        bits.append("BLOCKADED")
+    return ", ".join(bits) or "no controls"
+
+
+def _pct(d: dict | None, key: str) -> float:
+    try:
+        return float((d or {}).get(key) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _project_attrition(fighters: list[dict], enemy: dict) -> list[str]:
+    """Rough sequential projection: enemy planes / ships if the stack attacks best-odds first."""
+    out = []
+    en_planes = int(enemy.get("aircraft") or 0)
+    en_ships = int(enemy.get("ships") or 0)
+
+    need_as = [f for f in fighters if not f["controls"].air_sup_att and int(f.get("planes") or 0) > 0]
+    if en_planes > 0 and need_as:
+        remaining, steps = en_planes, []
+        for f in sorted(need_as, key=lambda x: _pct(x.get("air"), "immense_pct"), reverse=True)[:3]:
+            if remaining <= 0:
+                break
+            sim = simulate_air(Force(aircraft=int(f["planes"])), Force(aircraft=remaining))
+            steps.append(f"{f['name']} (~{_pct(sim, 'immense_pct'):.0f}% IT vs {remaining:,} planes)")
+            remaining = max(0, remaining - min(remaining, int(_pct(sim, "est_def_plane_loss"))))
+        if steps:
+            out.append(f"Air order: {' -> '.join(steps)}; enemy planes ~{remaining:,} after (rough)")
+
+    need_blockade = [f for f in fighters if not f["controls"].blockade_att and int(f.get("ships") or 0) > 0]
+    if en_ships > 0 and need_blockade:
+        remaining, steps = en_ships, []
+        for f in sorted(need_blockade, key=lambda x: _pct(x.get("nav"), "immense_pct"), reverse=True)[:3]:
+            if remaining <= 0:
+                break
+            sim = simulate_naval(Force(ships=int(f["ships"])), Force(ships=remaining))
+            steps.append(f"{f['name']} (~{_pct(sim, 'immense_pct'):.0f}% IT vs {remaining:,} ships)")
+            remaining = max(0, remaining - min(remaining, int(_pct(sim, "est_def_ship_loss"))))
+        if steps:
+            out.append(f"Naval order: {' -> '.join(steps)}; enemy ships ~{remaining:,} after (rough)")
+    return out
+
+
+def _stack_notes(fighters: list[dict], enemy: dict) -> list[str]:
+    """Rule-based coordination notes (who should do what, overlaps)."""
+    notes = []
+    en_planes = int(enemy.get("aircraft") or 0)
+    en_ships = int(enemy.get("ships") or 0)
+
+    need_as = [f for f in fighters if not f["controls"].air_sup_att]
+    if need_as:
+        best = max(need_as, key=lambda f: _pct(f.get("air"), "immense_pct"))
+        notes.append(
+            f"No air superiority yet: {', '.join(f['name'] for f in need_as)}. "
+            f"Best air odds: {best['name']} (~{_pct(best.get('air'), 'immense_pct'):.0f}% IT)."
+        )
+        if len(need_as) >= 2 and en_planes > 0:
+            notes.append(
+                "Enemy planes are ONE pool shared by every war: each dogfight win thins them for "
+                "everyone, so go in order of best odds instead of all at once."
+            )
+    ready_ground = [
+        f for f in fighters
+        if f["controls"].air_sup_att and not f["controls"].ground_ctrl_att and int(f.get("map") or 0) >= 3
+    ]
+    if ready_ground:
+        notes.append("Ready to ground now (have AS, 3+ MAP): " + ", ".join(f["name"] for f in ready_ground))
+    if en_ships > 0:
+        need_blockade = [f for f in fighters if not f["controls"].blockade_att and int(f.get("ships") or 0) > 0]
+        if need_blockade:
+            best = max(need_blockade, key=lambda f: _pct(f.get("nav"), "immense_pct"))
+            notes.append(
+                f"Enemy still has {en_ships:,} ships. Best naval odds: {best['name']} "
+                f"(~{_pct(best.get('nav'), 'immense_pct'):.0f}% IT)."
+            )
+    blockaded = [f["name"] for f in fighters if f["controls"].blockade_def]
+    if blockaded:
+        notes.append("Blockaded by this enemy: " + ", ".join(blockaded) + " (a naval win on the blockader frees them)")
+    return notes
+
+
+def _format_stack(fighters: list[dict], enemy: dict, speaker_id: int | None, orders_text: str = "") -> str:
+    ename = enemy.get("nation_name") or f"id:{enemy.get('id')}"
+    lines = [
+        f"STACK vs {ename}: {len(fighters)} Evergreen member(s) fighting this enemy (live data)",
+        f"Enemy pool (shared by every war): {int(enemy.get('soldiers') or 0):,}S "
+        f"{int(enemy.get('tanks') or 0):,}T {int(enemy.get('aircraft') or 0):,} planes "
+        f"{int(enemy.get('ships') or 0):,} ships",
+    ]
+
+    def is_speaker(f):
+        try:
+            return bool(speaker_id) and int(f["id"]) == int(speaker_id)
+        except (KeyError, TypeError, ValueError):
+            return False
+
+    for f in sorted(fighters, key=lambda f: 0 if is_speaker(f) else 1):
+        lines.append(
+            f"- {f['name']}{' [SPEAKER]' if is_speaker(f) else ''}: MAP {f.get('map')}/12 | "
+            f"{int(f.get('soldiers') or 0):,}S {int(f.get('tanks') or 0):,}T "
+            f"{int(f.get('planes') or 0):,}P {int(f.get('ships') or 0):,} ships | "
+            f"odds air {_pct(f.get('air'), 'win_pct'):.0f}%/{_pct(f.get('air'), 'immense_pct'):.0f}% IT, "
+            f"ground {_pct(f.get('gnd'), 'win_pct'):.0f}%/{_pct(f.get('gnd'), 'immense_pct'):.0f}% IT, "
+            f"naval {_pct(f.get('nav'), 'win_pct'):.0f}%/{_pct(f.get('nav'), 'immense_pct'):.0f}% IT | "
+            f"{_controls_text(f['controls'])}"
+        )
+    notes = _stack_notes(fighters, enemy) + _project_attrition(fighters, enemy)
+    if notes:
+        lines.append("Coordination notes:")
+        lines.extend(f"- {n}" for n in notes)
+    if orders_text:
+        lines.append("STACK ORDERS (same logic as /waradvice):\n" + orders_text.strip()[:1400])
+    return "\n".join(lines)[:STACK_CTX_MAX_CHARS]
+
+
+async def _stack_context(bot, guild_id: int, enemy: dict, our: dict | None, objective: str | None = None) -> str:
+    """Live stack brief for one enemy: every Evergreen member fighting it, simulated.
+
+    Reuses the same helpers /waradvice and the war rooms use, so advice never disagrees.
+    Returns "" when it can't be built.
+    """
+    try:
+        from cogs.waradvisor import _load_fighter, _stack_orders
+        from cogs.warroom import get_our_nations_for_enemy
+    except Exception as e:
+        log.warning("[ai] stack helpers unavailable: %s: %s", type(e).__name__, e)
+        return ""
+    client = _cached_client(bot)
+    if not client or not guild_id or not enemy or not enemy.get("id"):
+        return ""
+    eid = int(enemy["id"])
+
+    try:
+        members = await get_our_nations_for_enemy(bot, guild_id, eid)
+    except Exception as e:
+        log.warning("[ai] get_our_nations_for_enemy failed: %s", e)
+        members = []
+
+    speaker_id = None
+    pool: dict[int, dict] = {}
+    if our and _in_war_with(our, eid):
+        speaker_id = int(our["id"])
+        pool[speaker_id] = our          # full nation first, so it isn't refetched
+    for m in members or []:
+        try:
+            pool.setdefault(int(m.get("id")), m)
+        except (TypeError, ValueError):
+            continue
+    if not pool:
+        return ""
+
+    ids = list(pool)[:STACK_MAX_FIGHTERS]
+    sem = asyncio.Semaphore(3)
+
+    async def load(nid):
+        async with sem:
+            return await _load_fighter(client, pool[nid], enemy)
+
+    results = await asyncio.gather(*(load(i) for i in ids), return_exceptions=True)
+    fighters = []
+    for nid, r in zip(ids, results):
+        if isinstance(r, dict):
+            fighters.append(r)
+        else:
+            log.warning("[ai] load fighter %s failed: %s", nid, r)
+    if not fighters:
+        return ""
+    if len(fighters) == 1:
+        only = fighters[0]
+        who = "you are" if speaker_id and int(only["id"]) == speaker_id else f"only {only['name']} is"
+        return f"STACK: no other Evergreen member is fighting this enemy ({who} the one on it)."
+
+    try:
+        orders_text = _stack_orders(fighters, enemy, objective or "air_blockade_ground")
+    except Exception as e:
+        log.warning("[ai] _stack_orders failed: %s", e)
+        orders_text = ""
+    return _format_stack(fighters, enemy, speaker_id, orders_text)
+
+
+async def _speaker_stack_context(bot, guild_id: int, author_id: int, question: str) -> str:
+    """Stack brief for a member asking outside a war room: use the enemy from their own wars."""
+    client = _cached_client(bot)
+    if not client or not guild_id:
+        return ""
+    our_id = await database.get_nation_for_user(author_id)
+    if not our_id:
+        return ""
+    our = await client.get_nation(int(our_id))
+    if not our:
+        return ""
+    my_id = int(our["id"])
+
+    enemies: dict[int, str] = {}
+    for w in (our.get("offensive_wars") or []) + (our.get("defensive_wars") or []):
+        if (w.get("turns_left") or 0) <= 0:
+            continue
+        att, dfn = int(w.get("att_id") or 0), int(w.get("def_id") or 0)
+        eid = dfn if att == my_id else att
+        other = (w.get("defender") if att == my_id else w.get("attacker")) or {}
+        enemies[eid] = other.get("nation_name") or f"id:{eid}"
+    if not enemies:
+        return "SPEAKER is not in any active war right now."
+
+    ql = (question or "").lower()
+    chosen = None
+    if len(enemies) == 1:
+        chosen = next(iter(enemies))
+    else:
+        named = [
+            e for e, n in enemies.items()
+            if (n and n.lower() in ql) or re.search(rf"\b{e}\b", ql)
+        ]
+        if len(named) == 1:
+            chosen = named[0]
+    if chosen is None:
+        names = ", ".join(f"{n} (id {e})" for e, n in list(enemies.items())[:5])
+        return f"SPEAKER is fighting several enemies: {names}. Ask which one they mean before advising."
+
+    enemy = await client.get_nation(chosen)
+    if not enemy:
+        return f"Enemy nation id={chosen} not found."
+    stack = await _stack_context(bot, guild_id, enemy, our)
+    return stack or f"(Could not build a stack brief vs {enemies[chosen]}.)"
 
 
 def _extract_urls(text: str) -> list[str]:
@@ -570,7 +862,7 @@ async def _live_pw_context(bot, guild_id: int, question: str) -> str:
     q = (question or "").strip()
     ql = q.lower()
     bits = []
-    client = getattr(bot, "pw_client", None)
+    client = _cached_client(bot)
     if not client:
         return ""
 
@@ -747,7 +1039,7 @@ async def _live_pw_context(bot, guild_id: int, question: str) -> str:
     return "\n\n".join(bits)
 
 
-async def _war_room_tactical_context(bot, channel_id: int, author_id: int) -> str:
+async def _war_room_tactical_context(bot, channel_id: int, author_id: int, want_stack: bool = False) -> str:
     """Live war-room brief: enemy, linked nation, MAP, controls, specific attack tips."""
     try:
         room = await database.get_war_room_by_channel(channel_id)
@@ -756,7 +1048,7 @@ async def _war_room_tactical_context(bot, channel_id: int, author_id: int) -> st
     if not room or not room.get("enemy_nation_id"):
         return ""
 
-    client = getattr(bot, "pw_client", None)
+    client = _cached_client(bot)
     if not client:
         return ""
 
@@ -789,7 +1081,20 @@ async def _war_room_tactical_context(bot, channel_id: int, author_id: int) -> st
         else:
             lines.append("SPEAKER has no linked nation — give general stack advice only.")
 
-        lines.extend(_room_orders_block(room, int(our_id) if our_id else None))
+        stack_txt = ""
+        if want_stack:
+            try:
+                stack_txt = await _stack_context(
+                    bot, int(room.get("guild_id") or 0), enemy, our, room.get("objective")
+                )
+            except Exception as e:
+                log.warning("[ai] stack context failed: %s: %s", type(e).__name__, e)
+        has_live_stack = stack_txt.startswith("STACK vs")
+        lines.extend(_room_orders_block(
+            room, int(our_id) if our_id else None, include_last_orders=not has_live_stack
+        ))
+        if stack_txt:
+            lines.append(stack_txt)
 
         war = None
         if our:
@@ -984,12 +1289,21 @@ class AI(commands.Cog):
         knowledge = await self._knowledge_context(guild_id, question)
         live = await _live_pw_context(self.bot, guild_id, question)
         war_ctx = ""
+        tactical = _is_tactical(question)
         if channel_id and author_id:
-            war_ctx = await _war_room_tactical_context(self.bot, channel_id, author_id)
+            war_ctx = await _war_room_tactical_context(
+                self.bot, channel_id, author_id, want_stack=tactical
+            )
+            if not war_ctx and tactical:
+                # Not a war room: use the enemy from the speaker's own wars.
+                try:
+                    war_ctx = await _speaker_stack_context(self.bot, guild_id, author_id, question)
+                except Exception as e:
+                    log.warning("[ai] speaker stack failed: %s: %s", type(e).__name__, e)
             if len(war_ctx) > WAR_CTX_MAX_CHARS:
                 war_ctx = war_ctx[:WAR_CTX_MAX_CHARS] + "\n…(brief trimmed)"
 
-        system = SYSTEM_CORE + (SYSTEM_TACTICAL if _is_tactical(question) else SYSTEM_CASUAL)
+        system = SYSTEM_CORE + (SYSTEM_TACTICAL if tactical else SYSTEM_CASUAL)
 
         user = (
             f"Alliance knowledge (notes most relevant to this question):\n{knowledge}\n\n"
