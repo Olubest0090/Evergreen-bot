@@ -23,6 +23,10 @@ Stage 4 upgrade:
     speaker's wars / stack, guide search); code runs them; the answer is written from the results
   * Alliance guides are used silently (no listing / announcing them, no invented context)
   * Knowledge ingest reads Google Docs / Sheets / Slides as text and warns when a link is unreadable
+
+Stage 5 upgrade:
+  * The war call (YES / WAIT + reason) is computed in code from MAP, controls and exact odds,
+    and handed to the model as a VERDICT it must not flip-flop on (battle_sim odds are now exact)
 """
 
 import asyncio
@@ -91,6 +95,12 @@ STACK_MAX_FIGHTERS = 6
 STACK_CTX_MAX_CHARS = 3_000
 WAR_RECENT_ATTACKS = 5
 
+# War verdict thresholds (percent). One place to tune the call.
+VERDICT_GROUND_WIN = 55.0       # ground when MAP >= 3 and win chance >= this
+VERDICT_AIR_IT = 35.0           # airstrike to TAKE air superiority when MAP >= 4 and IT chance >= this
+VERDICT_BREAK_AS_WIN = 55.0     # airstrike to BREAK their air superiority when win chance >= this
+VERDICT_PRIZE_MIN_GAIN = 10.0   # mention the air-superiority prize if it lifts ground IT by this many points
+
 # Conversation memory (per channel, RAM only — resets when the bot restarts)
 HISTORY_MAX_MESSAGES = 6
 HISTORY_TTL_SECONDS = 30 * 60
@@ -155,6 +165,13 @@ SYSTEM_TACTICAL = (
     "- If a STACK block is present, advise the speaker's own next action with the other "
     "members in mind: who should take air, naval or ground, and avoid two members doing the "
     "same job. Only name members that appear in the data.\n"
+    "- If a VERDICT line is present, give that call and its reason in your own words. Never reverse "
+    "it because the person pushes back, repeats a number you already have, or asks again: it only "
+    "changes when the data changes (MAP, controls, units). If it differs from the STACK ORDERS for "
+    "the speaker, give the VERDICT and say why in one short line.\n"
+    "- Odds the person reads off the in-game battle screen beat the sim for that attack: use them, "
+    "re-check the Rule line, and only change the call if the rule really flips.\n"
+    "- Never state loot, rewards or game rules that are not in the data.\n"
     "- Use the recent attacks to judge momentum (who holds control, who is winning), "
     "but don't recite the list.\n"
 )
@@ -395,6 +412,86 @@ def _room_orders_block(room: dict, our_id: int | None, include_last_orders: bool
 # ---------------------------------------------------------------------------
 # Stack advice: every Evergreen member fighting the same enemy
 # ---------------------------------------------------------------------------
+
+def _war_verdict(
+    *, our_map: int, controls, enemy_planes: int,
+    air: dict, gnd: dict, nav: dict, gnd_with_as: dict | None = None,
+) -> list[str]:
+    """The war call, decided in code so the model can't flip-flop on it."""
+    g_win, g_it = _pct(gnd, "win_pct"), _pct(gnd, "immense_pct")
+    a_win, a_it = _pct(air, "win_pct"), _pct(air, "immense_pct")
+    n_win, n_it = _pct(nav, "win_pct"), _pct(nav, "immense_pct")
+    can_ground, can_air = our_map >= 3, our_map >= 4
+
+    ground_txt = f"ground {g_win:.0f}% win / {g_it:.0f}% IT"
+    air_txt = f"airstrike {a_win:.0f}% win / {a_it:.0f}% IT"
+
+    def wait(reason: str) -> tuple[str, str]:
+        return "WAIT", reason
+
+    if controls.air_sup_def:  # the enemy holds air superiority over us
+        if can_air and a_win >= VERDICT_BREAK_AS_WIN:
+            call, why = "YES - airstrike aircraft (break their air superiority)", air_txt
+        elif can_ground and g_win >= VERDICT_GROUND_WIN:
+            call = "YES - ground now"
+            why = f"{ground_txt} (their air superiority is already counted in these odds)"
+        elif not can_ground:
+            call, why = wait(f"need 3 MAP for ground or 4 for an airstrike (you have {our_map})")
+        else:
+            call, why = wait(f"{ground_txt} is below the {VERDICT_GROUND_WIN:.0f}% win rule and an airstrike needs 4 MAP")
+    elif not controls.air_sup_att and enemy_planes > 0:  # nobody holds air superiority yet
+        if can_air and a_it >= VERDICT_AIR_IT:
+            call, why = "YES - airstrike aircraft (take air superiority)", air_txt
+        elif can_ground and g_win >= VERDICT_GROUND_WIN:
+            call, why = "YES - ground now", ground_txt
+        elif not can_ground:
+            call, why = wait(f"need 3 MAP for ground (you have {our_map})")
+        else:
+            call, why = wait(f"{ground_txt} is below the {VERDICT_GROUND_WIN:.0f}% win rule")
+    else:  # we hold air superiority, or the enemy has no planes
+        if can_ground and g_win >= VERDICT_GROUND_WIN:
+            call, why = "YES - ground now", ground_txt
+        elif not can_ground:
+            call, why = wait(f"need 3 MAP for ground (you have {our_map})")
+        else:
+            call, why = wait(f"{ground_txt} is below the {VERDICT_GROUND_WIN:.0f}% win rule")
+
+    lines = [
+        "VERDICT (computed from the numbers in this brief; keep it unless MAP, controls or units change): "
+        f"{call}",
+        f"Why: {why}",
+    ]
+
+    if gnd_with_as and not controls.air_sup_att and enemy_planes > 0:
+        as_it = _pct(gnd_with_as, "immense_pct")
+        if as_it - g_it >= VERDICT_PRIZE_MIN_GAIN:
+            if a_it < VERDICT_AIR_IT:
+                reach = "too weak to try yet, rebuild planes first"
+            elif not can_air:
+                reach = f"it needs 4 MAP (you have {our_map})"
+            else:
+                reach = "within reach"
+            lines.append(
+                f"Prize: air superiority would lift ground to {_pct(gnd_with_as, 'win_pct'):.0f}% win / "
+                f"{as_it:.0f}% IT (enemy tanks halved). Airstrike now: {a_win:.0f}% win / {a_it:.0f}% IT vs "
+                f"{enemy_planes:,} enemy planes, {reach}."
+            )
+    if controls.blockade_def:
+        lines.append(f"Blockaded: a naval win ({n_win:.0f}% win / {n_it:.0f}% IT, 4 MAP) breaks it.")
+
+    def opt(txt: str, cost: int) -> str:
+        return txt if our_map >= cost else f"{txt} (needs {cost} MAP)"
+
+    lines.append(
+        "Options: " + opt(ground_txt, 3) + "; " + opt(air_txt, 4) + "; "
+        + opt(f"naval {n_win:.0f}% win / {n_it:.0f}% IT", 4)
+    )
+    lines.append(
+        f"Rule: ground when MAP>=3 and win>={VERDICT_GROUND_WIN:.0f}%; airstrike for air superiority "
+        f"when MAP>=4 and IT>={VERDICT_AIR_IT:.0f}%."
+    )
+    return lines
+
 
 def _cached_client(bot):
     """The bot's P&W client wrapped in a short-lived cache (one wrapper per bot)."""
@@ -1484,13 +1581,24 @@ async def _war_room_tactical_context(bot, channel_id: int, author_id: int, want_
                 f"Ground \\~{gnd['win_pct']:.0f}%/\\~{gnd['immense_pct']:.0f}% IT | "
                 f"Naval \\~{nav['win_pct']:.0f}%/\\~{nav['immense_pct']:.0f}% IT"
             )
-            tips = advice_for_war(
-                our=our_f, enemy=en_f,
-                our_map=our_map, enemy_map=enemy_map,
-                our_res=our_res, enemy_res=enemy_res,
-                controls=controls,
+            gnd_with_as = simulate_ground(
+                our_f, en_f, att_has_air_sup=True, def_has_air_sup=False,
             )
-            lines.append("Tactical brief:\n" + "\n".join(f"- {t}" for t in tips))
+            lines.extend(_war_verdict(
+                our_map=our_map, controls=controls, enemy_planes=int(enemy.get("aircraft") or 0),
+                air=air, gnd=gnd, nav=nav, gnd_with_as=gnd_with_as,
+            ))
+            try:  # keep only the MAP / resistance / controls status line from the old brief
+                tips = advice_for_war(
+                    our=our_f, enemy=en_f,
+                    our_map=our_map, enemy_map=enemy_map,
+                    our_res=our_res, enemy_res=enemy_res,
+                    controls=controls,
+                )
+                if len(tips) > 1:
+                    lines.append(tips[1])
+            except Exception as e:
+                log.warning("[ai] advice_for_war failed: %s", e)
         else:
             lines.append(
                 "No active war found between speaker and this room's enemy "

@@ -1,4 +1,9 @@
-"""P&W battle simulation — wiki formulas (same core as Locutus simulate)."""
+"""P&W battle simulation — wiki formulas (same core as Locutus simulate).
+
+Odds are now computed EXACTLY (no random trials), so the same forces always give the same
+numbers. A battle is 3 rounds; each side's round roll is value * U(ROLL_MIN, 1.0); the number
+of rounds the attacker wins decides the result (0 = Utter Failure ... 3 = Immense Triumph).
+"""
 
 from __future__ import annotations
 
@@ -6,6 +11,10 @@ import random
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Optional
+
+# Lower bound of the random roll (wiki: 40%). Single knob for calibrating against the game's
+# own "military advisors" odds screen.
+ROLL_MIN = 0.40
 
 
 class Victory(IntEnum):
@@ -26,10 +35,11 @@ MAP_COST = {"ground": 3, "air": 4, "naval": 4}
 
 
 def _roll(value: float) -> float:
-    return value * random.uniform(0.40, 1.00)
+    return value * random.uniform(ROLL_MIN, 1.00)
 
 
 def _best_of_three(att_v: float, def_v: float) -> Victory:
+    """One random battle (kept for callers that want a single sampled result)."""
     wins = 0
     for _ in range(3):
         if _roll(att_v) > _roll(def_v):
@@ -37,24 +47,52 @@ def _best_of_three(att_v: float, def_v: float) -> Victory:
     return Victory(wins)
 
 
+def _round_win_prob_ge1(r: float) -> float:
+    """Exact P(r*u1 > u2) for u1, u2 ~ U(ROLL_MIN, 1), r >= 1."""
+    a = ROLL_MIN
+    w = 1.0 - a
+    if r >= 1.0 / a:  # weakest attacker roll still beats the strongest defender roll
+        return 1.0
+    u0 = 1.0 / r      # above this attacker roll, a win is certain
+    part = (r * (u0 ** 2 - a ** 2) / 2.0 - a * (u0 - a)) / w
+    return (part + (1.0 - u0)) / w
+
+
+def round_win_prob(att_v: float, def_v: float) -> float:
+    """Exact chance the attacker wins one round."""
+    if att_v <= 0:
+        return 0.0
+    if def_v <= 0:
+        return 1.0
+    r = att_v / def_v
+    if r < 1.0:
+        return 1.0 - _round_win_prob_ge1(1.0 / r)
+    return _round_win_prob_ge1(r)
+
+
+def outcome_distribution(att_v: float, def_v: float) -> list[float]:
+    """[P(utter failure), P(pyrrhic), P(moderate), P(immense)] — exact, sums to 1."""
+    p = round_win_prob(att_v, def_v)
+    q = 1.0 - p
+    return [q ** 3, 3 * p * q * q, 3 * p * p * q, p ** 3]
+
+
 def expected_victory(att_v: float, def_v: float, trials: int = 400) -> dict:
-    """Monte Carlo expected outcome distribution."""
+    """Outcome distribution (exact; `trials` is accepted for backward compatibility and ignored)."""
     if att_v <= 0 and def_v <= 0:
-        return {"immense_pct": 0, "mod_pct": 0, "pyr_pct": 0, "fail_pct": 100, "avg_victory": 0.0}
-    counts = [0, 0, 0, 0]
-    for _ in range(trials):
-        v = _best_of_three(max(att_v, 0.01), max(def_v, 0.01))
-        counts[int(v)] += 1
-    total = float(trials)
-    avg = sum(i * counts[i] for i in range(4)) / total
+        return {
+            "immense_pct": 0, "mod_pct": 0, "pyr_pct": 0, "fail_pct": 100, "win_pct": 0,
+            "avg_victory": 0.0, "likely": Victory.UTTER_FAILURE,
+        }
+    dist = outcome_distribution(max(att_v, 0.01), max(def_v, 0.01))
     return {
-        "immense_pct": counts[3] / total * 100,
-        "mod_pct": counts[2] / total * 100,
-        "pyr_pct": counts[1] / total * 100,
-        "fail_pct": counts[0] / total * 100,
-        "win_pct": (counts[1] + counts[2] + counts[3]) / total * 100,
-        "avg_victory": avg,
-        "likely": Victory(max(range(4), key=lambda i: counts[i])),
+        "immense_pct": dist[3] * 100,
+        "mod_pct": dist[2] * 100,
+        "pyr_pct": dist[1] * 100,
+        "fail_pct": dist[0] * 100,
+        "win_pct": (dist[1] + dist[2] + dist[3]) * 100,
+        "avg_victory": sum(i * dist[i] for i in range(4)),
+        "likely": Victory(max(range(4), key=lambda i: dist[i])),
     }
 
 
