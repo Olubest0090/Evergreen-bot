@@ -95,16 +95,30 @@ async def was_war_alerted(guild_id: int, alliance_id: int, war_id: int, field: s
         return bool(rows and rows[0].get(field))
 
 
-async def find_recent_offensive_against(guild_id: int, nation_id: int, since_iso: str) -> dict | None:
-    """Look for a sphere war, seen since `since_iso`, where `nation_id` was the
-    DEFENDER — i.e. a nation in one of our registered sphere alliances attacked
-    them. Used to label an incoming defensive war as a likely counter-attack.
+async def list_wars_involving_nations(guild_id: int, nation_ids: list[int], since_iso: str) -> list[dict]:
+    """Stored sphere wars (any status) where one of `nation_ids` is attacker or defender and
+    the war was last seen at or after `since_iso`. Used by counter detection (utils.war_counter).
+    A war between two sphere alliances is stored once per alliance, so callers de-duplicate by war_id."""
+    ids = ",".join(str(int(n)) for n in nation_ids if n)
+    if not ids:
+        return []
+    params = {
+        "guild_id": f"eq.{guild_id}",
+        "last_seen_at": f"gte.{since_iso}",
+        "or": f"(attacker_nation_id.in.({ids}),defender_nation_id.in.({ids}))",
+        "select": "war_id,turns_left,attacker_nation_id,defender_nation_id,attacker_alliance_id,defender_alliance_id,last_seen_at",
+        "order": "last_seen_at.desc",
+        "limit": "300",
+    }
+    async with database._session.get(_base()+"/sphere_wars", params=params) as r:
+        await _check(r, (200,))
+        return await r.json()
 
-    Returns the most recently seen matching war row, or None if there isn't one.
-    `since_iso` should be a recent window (the monitor refreshes every active
-    war's last_seen_at each cycle, so an ended war's last_seen_at stops moving
-    forward and naturally falls out of a short window).
-    """
+
+async def find_recent_offensive_against(guild_id: int, nation_id: int, since_iso: str) -> dict | None:
+    """DEPRECATED — no longer used. The old Sphere counter check ("did any sphere nation hit this
+    nation recently") ignored who attacked first and which nation was involved. Counter detection now
+    lives in utils.war_counter (a port of Locutus). Kept only so nothing importing it breaks."""
     params = {
         "guild_id": f"eq.{guild_id}",
         "defender_nation_id": f"eq.{nation_id}",

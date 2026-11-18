@@ -2,20 +2,37 @@
 from __future__ import annotations
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone, timedelta
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 from utils import sphere_db
+from utils.pw_cache import CachedPWClient
 from utils.spy_suspects import find_possible_spy_suspects, format_activity_age
+from utils.war_counter import (
+    COUNTER_LABELS,
+    CounterResult,
+    CounterType,
+    WAR_TURNS,
+    classify_war,
+    coalition,
+    current_turn,
+    war_rec_from_api,
+    war_rec_from_row,
+    war_recs_from_nation,
+)
 
 log=logging.getLogger("evergreen.sphere")
 POLL_SECONDS=120
-# How far back to look when deciding whether an incoming defensive war is a
-# "counter" (the attacker defending against a sphere nation that hit them
-# first). Several poll cycles wide so a war isn't missed between checks, but
-# short enough that an ended war's frozen last_seen_at falls out of it.
-COUNTER_LOOKBACK_SECONDS = POLL_SECONDS * 5
+# Counter detection (a port of Locutus' WarDB.updateCounter, see utils/war_counter.py).
+# Treaty partners change rarely, so they are cached for a while.
+TREATY_CACHE_SECONDS = 600
+# A stored war counts as "still active" if the monitor saw it within this many poll cycles.
+COUNTER_ACTIVE_WINDOW_SECONDS = POLL_SECONDS * 3
+# Wars started up to 5 days before a war can matter, and a war lasts up to 5 days, so any
+# stored war last seen within 10 days is a candidate (the exact window is applied in code).
+COUNTER_ROW_LOOKBACK_DAYS = 10
 # Pause after every spy-suspect search (it can cost many Politics & War API
 # pages) so two spy losses landing in the same monitor cycle don't fire two
 # heavy searches back to back and exhaust the API's rate limit.
@@ -48,6 +65,8 @@ class Sphere(commands.Cog):
         self.bot=bot
         self._poll_lock=asyncio.Lock()
         self._last_discord_send=0.0
+        self._treaty_cache: dict[int, tuple[float, set[int]]] = {}
+        self._pw_cache: CachedPWClient | None = None
         self.monitor.start()
 
     def cog_unload(self):
@@ -164,30 +183,73 @@ class Sphere(commands.Cog):
     async def before_monitor(self):
         await self.bot.wait_until_ready()
 
-    async def _counter_note(self, guild_id: int, opponent_nation_id: int) -> str:
-        """For a defensive war, describe whether the opponent is likely
-        counter-attacking because a sphere nation (us or an ally) hit them
-        first. Never raises: a lookup failure is reported in the text instead
-        of silently showing nothing."""
-        since = (
-            datetime.now(timezone.utc) - timedelta(seconds=COUNTER_LOOKBACK_SECONDS)
-        ).isoformat()
-        try:
-            hit = await sphere_db.find_recent_offensive_against(
-                guild_id, opponent_nation_id, since
-            )
-        except Exception:
-            log.exception(
-                "Counter-attack lookup failed for opponent nation %s",
-                opponent_nation_id,
-            )
-            return "Unknown (lookup failed)"
-        if not hit:
-            return "No — not currently fighting a sphere nation we can see"
-        return (
-            f"Likely — they're defending against **{hit.get('attacker_name','a sphere nation')}** "
-            f"(*{hit.get('alliance_name','our sphere')}*)"
+    # ------------------------------------------------------------------
+    # Counter detection (Locutus' WarDB.updateCounter, see utils/war_counter.py)
+    # ------------------------------------------------------------------
+
+    def _pw(self) -> CachedPWClient:
+        """The bot's P&W client behind a short-lived cache (nation lookups are heavy)."""
+        raw = self.bot.pw_client
+        if self._pw_cache is None or self._pw_cache.wrapped is not raw:
+            self._pw_cache = CachedPWClient(raw)
+        return self._pw_cache
+
+    async def _coalition(self, alliance_id: int) -> set[int]:
+        """An alliance plus its extension / defensive / protectorate partners."""
+        hit = self._treaty_cache.get(alliance_id)
+        if hit and time.monotonic() - hit[0] < TREATY_CACHE_SECONDS:
+            return hit[1]
+        treaties = await self.bot.pw_client.get_alliance_treaties(alliance_id)
+        members = coalition(alliance_id, treaties)
+        self._treaty_cache[alliance_id] = (time.monotonic(), members)
+        return members
+
+    async def _other_wars(self, guild_id: int, war, sphere_alliance_ids: set[int], now_turn: int):
+        """Every other war of the two nations: stored sphere wars + live wars of non-sphere nations."""
+        now = datetime.now(timezone.utc)
+        since = (now - timedelta(days=COUNTER_ROW_LOOKBACK_DAYS)).isoformat()
+        recs = {}
+        rows = await sphere_db.list_wars_involving_nations(guild_id, [war.att_id, war.def_id], since)
+        for row in rows:
+            rec = war_rec_from_row(row, now, COUNTER_ACTIVE_WINDOW_SECONDS)
+            if rec is None:
+                continue
+            old = recs.get(rec.war_id)
+            if old is None or (rec.active and not old.active):
+                recs[rec.war_id] = rec
+        # Wars of a nation outside the registered sphere (e.g. the enemy, or an ally of the enemy
+        # attacking a sphere nation) are not stored, so read them live. Failures only narrow the
+        # evidence; they never block the alert.
+        for nation_id, alliance_id in ((war.att_id, war.att_aa), (war.def_id, war.def_aa)):
+            if alliance_id in sphere_alliance_ids:
+                continue
+            try:
+                nation = await self._pw().get_nation(nation_id)
+            except Exception as exc:
+                log.warning("Counter check: could not load nation %s: %s", nation_id, exc)
+                continue
+            for rec in war_recs_from_nation(nation or {}, now_turn):
+                recs[rec.war_id] = rec
+        return list(recs.values())
+
+    async def _counter_stat(self, guild_id: int, war: dict, sphere_alliance_ids: set[int], now_turn: int) -> CounterResult:
+        rec = war_rec_from_api(war, now_turn)
+        if not rec.att_aa or not rec.def_aa:
+            return CounterResult(CounterType.UNCONTESTED)
+        att_coalition, def_coalition = await asyncio.gather(
+            self._coalition(rec.att_aa), self._coalition(rec.def_aa)
         )
+        others = await self._other_wars(guild_id, rec, sphere_alliance_ids, now_turn)
+        elapsed_turns = WAR_TURNS - int(war.get("turns_left") or WAR_TURNS)
+        # Locutus ignores ended wars while the war is under 15 minutes old; the API only gives
+        # turn precision, so "declared this turn or last turn" is the closest equivalent.
+        stat = classify_war(rec, others, att_coalition, def_coalition, fresh=elapsed_turns <= 1)
+        if stat.type is not CounterType.UNCONTESTED:
+            log.info(
+                "War %s counter=%s (is_counter via %s, countered by %s)",
+                rec.war_id, stat.type.name, stat.is_counter, stat.counters,
+            )
+        return stat
 
     async def _monitor_guild(self,guild_id: int):
         alliances=await sphere_db.list_alliances(guild_id)
@@ -195,6 +257,11 @@ class Sphere(commands.Cog):
         if not alliances:
             return
         cfg=await sphere_db.get_config(guild_id) or {}
+        sphere_alliance_ids={int(a["alliance_id"]) for a in alliances}
+
+        # Phase 1: read every alliance and record ALL of this cycle's wars before judging any
+        # of them, so counter detection never depends on which alliance is processed first.
+        snapshots=[]
         for alliance in alliances:
             aid=int(alliance["alliance_id"])
             try:
@@ -206,6 +273,16 @@ class Sphere(commands.Cog):
             for war in wars:
                 try:
                     await sphere_db.upsert_war(guild_id,aid,alliance["alliance_name"],war)
+                except Exception:
+                    log.exception("Could not record sphere war %s",war.get("id"))
+            snapshots.append((alliance,aid,members,wars))
+
+        now_turn=current_turn()
+
+        # Phase 2: alerts and spy monitoring.
+        for alliance,aid,members,wars in snapshots:
+            for war in wars:
+                try:
                     side=war.get("_side")
                     field="offensive_alerted" if side=="offense" else "defensive_alerted"
                     channel_key="offensive_channel_id" if side=="offense" else "defensive_channel_id"
@@ -230,9 +307,19 @@ class Sphere(commands.Cog):
                         )
                         continue
 
+                    # Same wording as Locutus' war card; uncontested shows nothing.
+                    try:
+                        stat=await self._counter_stat(guild_id,war,sphere_alliance_ids,now_turn)
+                        label=COUNTER_LABELS.get(stat.type)
+                        counter_line=f"**{label}**\n" if label else ""
+                    except Exception:
+                        log.exception("Counter detection failed for war %s",war.get("id"))
+                        counter_line="**Counter:** unknown (lookup failed)\n"
+
                     label="OFFENSIVE WAR" if side=="offense" else "DEFENSIVE WAR"
                     embed=discord.Embed(title=f"⚔️ Sphere {label}",color=discord.Color.orange() if side=="offense" else discord.Color.red())
-                    description=(f"**Sphere alliance:** {alliance['alliance_name']} (`{aid}`)\n"
+                    description=(f"{counter_line}"
+                        f"**Sphere alliance:** {alliance['alliance_name']} (`{aid}`)\n"
                         f"**Sphere nation:** {sphere_nation.get('nation_name','Unknown')}\n"
                         f"**Opponent:** {opponent.get('nation_name','Unknown')}\n"
                         f"**Opponent alliance:** "
@@ -240,9 +327,6 @@ class Sphere(commands.Cog):
                         f"(`{opponent.get('alliance_id') or 'None'}`)\n"
                         f"**War type:** {war.get('war_type','Unknown')}\n"
                         f"**Turns left:** {war.get('turns_left','?')}\n")
-                    if side == "defense" and opponent.get("id"):
-                        counter_note = await self._counter_note(guild_id, int(opponent["id"]))
-                        description += f"**Counter:** {counter_note}\n"
                     description += f"[Open war](https://politicsandwar.com/nation/war/timeline/war={war['id']})"
                     embed.description=description
                     sent=await self._send_channel(cfg.get(channel_key),embed=embed)
