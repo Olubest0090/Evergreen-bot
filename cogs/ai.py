@@ -27,6 +27,10 @@ Stage 4 upgrade:
 Stage 5 upgrade:
   * The war call (YES / WAIT + reason) is computed in code from MAP, controls and exact odds,
     and handed to the model as a VERDICT it must not flip-flop on (battle_sim odds are now exact)
+
+Stage 6 upgrade:
+  * Actions: "remind me in 1 hour to ...", "ping @x in 30 min", "my timezone is Africa/Lagos",
+    "delete this channel" ... become intents run by cogs/reminders.py (permission-checked)
 """
 
 import asyncio
@@ -37,6 +41,7 @@ import logging
 import re
 import time
 from collections import Counter, deque
+from dataclasses import dataclass
 
 import aiohttp
 import discord
@@ -44,6 +49,7 @@ from discord.ext import commands
 
 from utils import database
 from utils.pw_cache import CachedPWClient
+from utils.ai_actions import ACTION_TOOL_NAMES, intent_from_tool, parse_simple_reminder
 from utils.battle_sim import (
     Force, ControlState, advice_for_war, infer_controls_from_attacks,
     simulate_air, simulate_ground, simulate_naval,
@@ -853,9 +859,26 @@ _SMALLTALK_RE = re.compile(
 )
 
 
+# Words / mentions that mean the message may be ordering an action (never treated as small talk).
+_ACTION_HINT_RE = re.compile(
+    r"\b(remind|reminders?|ping|delete|lock|unlock|purge|rename|slowmode|timezone|cancel)\b|<@",
+    re.IGNORECASE,
+)
+
+
 def _is_smalltalk(question: str) -> bool:
     q = (question or "").strip()
-    return len(q.split()) <= 5 and "?" not in q and bool(_SMALLTALK_RE.match(q))
+    return (
+        len(q.split()) <= 5 and "?" not in q and bool(_SMALLTALK_RE.match(q))
+        and not _ACTION_HINT_RE.search(q)
+    )
+
+
+@dataclass
+class ActionReply:
+    """Reply to an action request: text plus an optional Confirm / Cancel view."""
+    text: str
+    view: object | None = None
 
 
 def _tool(name: str, desc: str, props: dict, required: tuple = ()) -> dict:
@@ -883,6 +906,25 @@ TOOLS = [
     _tool("configured_blocs", "Alliances this server lists as ALLIES, ENEMIES or DNR.",
           {"bloc": {"type": "string", "enum": ["ALLIES", "ENEMIES", "DNR", "EXTENSION", "DNR_MEMBERS"]}},
           ("bloc",)),
+    _tool("remind",
+          "Set a reminder or a delayed ping. Use targets for other people (user ids from <@id> mentions).",
+          {"text": {"type": "string", "description": "what to remind about"},
+           "delay_minutes": {"type": "number", "description": "minutes from now"},
+           "at_local": {"type": "string", "description": "clock time as YYYY-MM-DD HH:MM in the speaker's timezone"},
+           "targets": {"type": "array", "items": {"type": "string"}}}, ("text",)),
+    _tool("list_reminders", "List the speaker's pending reminders and scheduled actions.", {}),
+    _tool("cancel_reminder", "Cancel a pending reminder (the latest one if no id is given).",
+          {"id": {"type": "integer"}, "all": {"type": "boolean"}}),
+    _tool("set_timezone", "Save the speaker's own timezone.",
+          {"tz": {"type": "string", "description": "IANA name like Africa/Lagos, abbreviation like WAT, or UTC+1"}},
+          ("tz",)),
+    _tool("channel_action",
+          "Act on the current channel. Only when the person clearly orders it.",
+          {"action": {"type": "string", "enum": ["delete", "rename", "set_topic", "lock", "unlock", "slowmode", "purge"]},
+           "value": {"type": "string", "description": "new name / topic, slowmode seconds, or message count"},
+           "delay_minutes": {"type": "number"},
+           "at_local": {"type": "string", "description": "YYYY-MM-DD HH:MM in the speaker's timezone"}},
+          ("action",)),
     _tool("speaker_wars",
           "The speaker's own active wars against one enemy, plus every Evergreen member fighting that enemy.",
           {"enemy": {"type": "string", "description": "enemy nation name or id, optional"}}),
@@ -898,12 +940,19 @@ PLANNER_SYSTEM = (
     "- lookup_nation / lookup_alliance: a specific nation or alliance named in the message.\n"
     "- market_prices: resource prices. top_alliances: rankings. configured_blocs: our allies, enemies or DNR.\n"
     "- speaker_wars: the speaker asks what to do in their own current war.\n"
+    "- Action tools (remind, list_reminders, cancel_reminder, set_timezone, channel_action): ONLY when the "
+    "person clearly orders the action ('remind me in 1 hour to ...', 'ping <@123> in 30 min', 'delete this "
+    "channel', 'my timezone is Lagos'). Never for questions or hypotheticals ('should I delete ...', 'how do "
+    "I ...'). When you call an action tool call nothing else. Relative times go in delay_minutes; clock times "
+    "in at_local as 'YYYY-MM-DD HH:MM' in the speaker's timezone. Copy mentioned users as ids from <@id> in "
+    "targets; leave targets empty for the speaker. rename/set_topic: new text in value; slowmode: value in "
+    "seconds; purge: value is the message count.\n"
 )
 
 _OUR_ALLIANCE_WORDS = {"", "our", "us", "ours", "my", "evergreen", "our alliance", "my alliance", "we"}
 
 
-async def _plan_tools(session, question: str, history: list[dict], *, in_war_room: bool = False):
+async def _plan_tools(session, question: str, history: list[dict], *, in_war_room: bool = False, extra_system: str = ""):
     """Ask a small model which lookups the question needs.
 
     Returns [(tool_name, args), ...] (possibly empty = no lookups needed),
@@ -917,7 +966,7 @@ async def _plan_tools(session, question: str, history: list[dict], *, in_war_roo
     ):
         return None
     model = os.environ.get("GROQ_PLANNER_MODEL", GROQ_PLANNER_MODEL)
-    system = PLANNER_SYSTEM
+    system = PLANNER_SYSTEM + extra_system
     if in_war_room:
         system += "A live war-room brief is already provided, so do not call speaker_wars.\n"
     messages = [{"role": "system", "content": system}]
@@ -1769,6 +1818,52 @@ class AI(commands.Cog):
                 total += len(r)
         return "\n\n".join(parts), doc_queries
 
+    # ----- actions --------------------------------------------------------
+
+    async def _action_context(self, author_id: int | None) -> str:
+        """Current time and the speaker's timezone for the planner (empty if actions aren't loaded)."""
+        cog = self.bot.get_cog("Reminders")
+        if cog is None or not author_id:
+            return ""
+        try:
+            return await cog.planner_context(author_id)
+        except Exception as e:
+            log.warning("[ai] planner context failed: %s: %s", type(e).__name__, e)
+            return ""
+
+    async def _maybe_run_actions(self, plan, message, question: str):
+        """Run action tool calls from the planner (or the offline reminder parser if it failed).
+
+        Returns an ActionReply, or None when the message isn't an action request.
+        """
+        intents = []
+        if plan:
+            for name, args in plan:
+                if name in ACTION_TOOL_NAMES:
+                    intent = intent_from_tool(name, args)
+                    if intent is not None:
+                        intents.append(intent)
+        elif plan is None:  # planner unavailable: still handle the simple "remind me in N ..." wording
+            intent = parse_simple_reminder(question)
+            if intent is not None:
+                intents.append(intent)
+        if not intents:
+            return None
+        cog = self.bot.get_cog("Reminders")
+        if cog is None:
+            return ActionReply("Actions aren't set up on this bot yet (the reminders module isn't loaded).")
+        texts, view = [], None
+        for intent in intents[:3]:
+            text, v = await cog.handle(message, intent)
+            if v is not None:
+                if view is not None:
+                    text = "Ask for that one separately: only one confirmation at a time."
+                else:
+                    view = v
+            texts.append(text)
+        log.info("[ai] actions %s by %s", [i.kind + (":" + i.action if i.action else "") for i in intents[:3]], message.author.id)
+        return ActionReply("\n".join(texts), view)
+
     # ----- answering ------------------------------------------------------
 
     async def _answer(
@@ -1779,11 +1874,25 @@ class AI(commands.Cog):
         *,
         channel_id: int | None = None,
         author_id: int | None = None,
-    ) -> str:
+        message=None,
+    ):
         session = self.bot.http_session
         history = self._history_for(channel_id) if channel_id else []
         tactical = _is_tactical(question)
         smalltalk = _is_smalltalk(question)
+
+        # Action requests (reminders, channel actions) are planned first and never reach the model's
+        # answer step. The war-room brief is only built if the message turns out not to be an action.
+        plan, plan_done = None, False
+        if message is not None and not smalltalk and _ACTION_HINT_RE.search(question):
+            plan = await _plan_tools(
+                session, question, history, in_war_room=False,
+                extra_system=await self._action_context(author_id),
+            )
+            plan_done = True
+            action_reply = await self._maybe_run_actions(plan, message, question)
+            if action_reply is not None:
+                return action_reply
 
         # War room brief (only exists inside a war room channel)
         war_ctx = ""
@@ -1796,7 +1905,8 @@ class AI(commands.Cog):
         # Pick lookups with the planner; fall back to keyword lookups if it is off or fails.
         live, doc_queries = "", []
         if not smalltalk:
-            plan = await _plan_tools(session, question, history, in_war_room=in_room)
+            if not plan_done:
+                plan = await _plan_tools(session, question, history, in_war_room=in_room)
             if plan is None:
                 live = await _live_pw_context(self.bot, guild_id, question)
                 if not war_ctx and tactical and channel_id and author_id:
@@ -1888,6 +1998,7 @@ class AI(commands.Cog):
                     self._answer(
                         message.guild.id, content, (message.author.display_name or message.author.name),
                         channel_id=message.channel.id, author_id=message.author.id,
+                        message=message,
                     ),
                     timeout=45,
                 )
@@ -1902,6 +2013,19 @@ class AI(commands.Cog):
                     answer = "AI key missing on Render (GROQ_API_KEY)."
                 else:
                     answer = "Couldn't answer — try again."
+        if isinstance(answer, ActionReply):
+            try:
+                sent = await message.reply(
+                    answer.text, view=answer.view, mention_author=False,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                ) if answer.view is not None else await message.reply(
+                    answer.text, mention_author=False, allowed_mentions=discord.AllowedMentions.none(),
+                )
+                if answer.view is not None:
+                    answer.view.message = sent
+            except Exception as e:
+                log.warning("action reply failed: %s", e)
+            return
         try:
             await message.reply(answer, mention_author=False)
         except Exception as e:

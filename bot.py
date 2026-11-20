@@ -44,6 +44,7 @@ INITIAL_COGS = (
     "cogs.waradvisor",
     "cogs.simulate",
     "cogs.sphere",
+    "cogs.reminders",
 )
 
 
