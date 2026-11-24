@@ -45,6 +45,7 @@ INITIAL_COGS = (
     "cogs.simulate",
     "cogs.sphere",
     "cogs.reminders",
+    "cogs.tickets",
 )
 
 
