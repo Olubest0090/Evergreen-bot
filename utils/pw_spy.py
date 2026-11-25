@@ -5,6 +5,8 @@ the victim lost. Before building the same thing, this checks whether Evergreen's
 can actually read those fields for a given nation.
 """
 
+import asyncio
+
 BASE_QUERY = """
 query($id: [Int]) {
   nations(id: $id, first: 1) {
@@ -45,6 +47,9 @@ async def probe_spy_counters(pw_client, nation_id: int) -> dict:
     except Exception as exc:
         result["base_error"] = str(exc)
 
+    # Small gap so the second query does not land straight after the first.
+    await asyncio.sleep(2)
+
     try:
         data = await pw_client._query(COUNTER_QUERY, {"id": [int(nation_id)]})
         rows = (data.get("nations") or {}).get("data") or []
@@ -55,8 +60,19 @@ async def probe_spy_counters(pw_client, nation_id: int) -> dict:
     return result
 
 
+def _is_rate_limited(error) -> bool:
+    return bool(error) and "rate limit" in str(error).lower()
+
+
 def describe_spy_probe(result: dict) -> str:
     lines = []
+
+    if _is_rate_limited(result.get("base_error")) or _is_rate_limited(result.get("counter_error")):
+        return (
+            "**Inconclusive: the Politics & War API rate limited this test.**\n"
+            "That says nothing about whether spy_kills is readable. "
+            "Wait a couple of minutes and run the command again."
+        )
 
     base = result.get("base")
     if result.get("base_error"):
