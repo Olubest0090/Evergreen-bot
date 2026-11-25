@@ -15,6 +15,8 @@ from utils import database, embeds
 from cogs.counter import qualifies, military_total
 from utils.formatting import format_duration, military_line, nation_block
 from utils.spy_suspects import find_possible_spy_suspects
+from utils.spy_alerts import handle_espionage_check
+from utils.pw_spy import probe_spy_counters, describe_spy_probe
 
 CHANNEL_TYPE_CHOICES = [
     app_commands.Choice(name="Defensive Wars", value="defense_channel_id"),
@@ -145,6 +147,22 @@ class Alerts(commands.Cog):
         await interaction.response.send_message(
             embed=embeds.info("Alert Configuration", "\n".join(lines))
         )
+
+    @alerts_group.command(name="spykills", description="Test whether the API shows a nation's spy kill/loss counters")
+    @app_commands.describe(nation_id="Politics & War nation ID to test")
+    async def spykills(self, interaction: discord.Interaction, nation_id: int):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            result = await probe_spy_counters(self.bot.pw_client, nation_id)
+            await interaction.followup.send(
+                embed=embeds.info("Spy Counter Test", describe_spy_probe(result)[:3500]),
+                ephemeral=True,
+            )
+        except Exception as e:
+            await interaction.followup.send(
+                embed=embeds.error("Spy Counter Test Failed", str(e)[:900]),
+                ephemeral=True,
+            )
 
     @alerts_group.command(name="refresh", description="Force an immediate check for new wars/espionage")
     async def refresh(self, interaction: discord.Interaction):
@@ -422,87 +440,7 @@ class Alerts(commands.Cog):
                 )
 
     async def _handle_espionage_check(self, guild_id, config, member, our_alliance_id):
-        channel_id = config.get("espionage_channel_id")
-        if not channel_id:
-            return
-
-        nation_id = int(member["id"])
-        current_spies = int(member.get("spies") or 0)
-        last_spies = await database.get_last_spies(guild_id, nation_id)
-
-        if last_spies is None or current_spies >= last_spies:
-            await database.set_last_spies(guild_id, nation_id, current_spies)
-            return
-
-        channel = await self._get_channel(channel_id)
-        if not channel:
-            return
-
-        discord_id = await database.get_discord_id_for_nation(nation_id)
-        ping = f"<@{discord_id}> " if discord_id else ""
-
-        embed = embeds.warning(
-            "🕵️ Possible Espionage Loss",
-            f"**{member.get('nation_name', 'Unknown')}** lost spies: "
-            f"{last_spies} → {current_spies}.\n"
-            f"**Change:** -{last_spies - current_spies} spies.\n"
-            "Possible suspects are filtered by score range, active in-game treaties "
-            "and recent activity. This does not prove who performed the operation.",
-        )
-
-        try:
-            suspects = await find_possible_spy_suspects(
-                self.bot.pw_client,
-                member,
-            )
-        except Exception as exc:
-            suspects = None
-            suspect_error = str(exc)
-
-        if suspects is None:
-            embed.add_field(
-                name="Possible Suspects",
-                value=f"Could not complete suspect search: `{suspect_error[:900]}`",
-                inline=False,
-            )
-        elif not suspects:
-            embed.add_field(
-                name="Possible Suspects",
-                value=(
-                    "No qualifying nations found. Nations in the victim's alliance "
-                    "and active treaty alliances, plus nations not active within "
-                    "15 minutes, were excluded."
-                ),
-                inline=False,
-            )
-        else:
-            lines = [
-                f"[{nation.get('nation_name', 'Unknown')}]"
-                f"(https://politicsandwar.com/nation/id={nation.get('id')}) "
-                f"— *{(nation.get('alliance') or {}).get('name', 'None')}* "
-                f"(`{nation.get('alliance_id') or 'None'}`) "
-                f"— {format_duration(nation.get('last_active'))} ago"
-                for nation in suspects
-            ]
-
-            for index in range(0, len(lines), 10):
-                embed.add_field(
-                    name=(
-                        "Possible Suspects — most recently active first"
-                        if index == 0 else "\u200b"
-                    ),
-                    value="\n".join(lines[index:index + 10]),
-                    inline=False,
-                )
-
-        try:
-            await channel.send(content=ping or None, embed=embed)
-        except discord.HTTPException:
-            return
-
-        # Only update after the alert was successfully delivered.
-        # A failed send will be retried on the next monitoring cycle.
-        await database.set_last_spies(guild_id, nation_id, current_spies)
+        await handle_espionage_check(self, guild_id, config, member, our_alliance_id)
 
 
 async def setup(bot: commands.Bot):
