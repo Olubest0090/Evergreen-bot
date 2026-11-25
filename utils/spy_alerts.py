@@ -5,7 +5,6 @@ done it (in the real spy range, not in the victim's alliance or treaty partners)
 by how recently they were active. Every search is stored as an incident snapshot.
 """
 
-import asyncio
 import logging
 from datetime import datetime, timezone
 
@@ -21,72 +20,70 @@ from utils.spy_suspects import (
 
 log = logging.getLogger("evergreen.spy_alerts")
 
-# Safety caps. Anything beyond them is counted in the alert and kept in the snapshot.
-MAX_RECENT_LISTED = 200
-MAX_EARLIER_LISTED = 80
-PAGE_PAUSE_SECONDS = 0.6
+# One compact list: the most recently active nations that fit in a single embed.
+# Everything else is counted in the summary and kept in the incident snapshot.
+LIST_MAX_CHARS = 3300
 
 
 def _summary_text(report) -> str:
     lines = [
-        f"**Attacker score range:** {report.min_score:,.0f} – {report.max_score:,.0f} "
-        f"(victim score {report.victim_score:,.0f}; spy ops reach 0.4x–2.5x)",
-        f"**Nations in range:** {report.in_range_total:,}",
-        f"**Active within 15 min before alert:** {len(report.recent)}",
-        f"**Active 15–60 min before alert:** {len(report.earlier)}",
-        f"**Active over 60 min before alert (not listed):** {report.older_count:,}",
+        f"**Range:** {report.min_score:,.0f}–{report.max_score:,.0f} score · "
+        f"**In range:** {report.in_range_total:,}",
+        f"**Active ≤15 min:** {len(report.recent)} · "
+        f"**15–60 min:** {len(report.earlier)} · "
+        f"**Older:** {report.older_count:,}",
     ]
 
     excluded = []
     if report.excluded_same_alliance:
-        excluded.append(f"{report.excluded_same_alliance} in the victim's alliance")
+        excluded.append(f"{report.excluded_same_alliance} same alliance")
     if report.excluded_treaty:
-        excluded.append(
-            f"{report.excluded_treaty} in treaty partner alliances "
-            "(the game blocks ops between treaty partners)"
-        )
+        excluded.append(f"{report.excluded_treaty} treaty partners")
     if report.no_activity_data:
-        excluded.append(f"{report.no_activity_data} with no activity data")
+        excluded.append(f"{report.no_activity_data} no activity data")
     if report.unreadable:
-        excluded.append(f"{report.unreadable} with unreadable data")
+        excluded.append(f"{report.unreadable} unreadable")
     if excluded:
-        lines.append("**Excluded:** " + "; ".join(excluded))
+        lines.append("**Excluded:** " + " · ".join(excluded))
+
+    if report.treaty_alliances:
+        names = [
+            f"{name or 'Unknown'} ({aid})"
+            for aid, name in sorted(
+                report.treaty_alliances.items(), key=lambda item: str(item[1])
+            )
+        ]
+        shown = ", ".join(names[:10])
+        if len(names) > 10:
+            shown += f", +{len(names) - 10} more"
+        lines.append(f"**Treaty partners excluded:** {shown}")
+    elif not report.treaty_lookup_failed:
+        lines.append("**Treaty partners excluded:** none found")
 
     if report.treaty_lookup_failed:
-        lines.append(
-            "⚠️ The treaty lookup failed, so no treaty partners were excluded."
-        )
-
-    if not report.recent:
-        lines.append(
-            "\nNo nations in range were active in the 15 minutes before this alert. "
-            "Check the earlier list below."
-        )
+        lines.append("⚠️ Treaty lookup failed, so no treaty partners were excluded.")
 
     return "\n".join(lines)
 
 
-async def _send_pages(channel, title: str, suspects: list, cap: int) -> None:
-    if not suspects:
-        return
+def _list_embed(report):
+    """Top of the 'active within 15 minutes' list, cut to one embed."""
+    if not report.recent:
+        return embeds.info(
+            "🟢 Active within 15 min before the alert",
+            "Nobody in range was active in the 15 minutes before this alert.",
+        )
 
-    shown = suspects[:cap]
-    hidden = len(suspects) - len(shown)
-    pages = list(chunk_lines([format_suspect_line(n) for n in shown]))
+    lines = [format_suspect_line(n) for n in report.recent]
+    first_page = next(chunk_lines(lines, LIST_MAX_CHARS))
+    shown = first_page.count("\n") + 1
+    hidden = len(lines) - shown
 
-    for index, text in enumerate(pages, start=1):
-        if hidden and index == len(pages):
-            text += f"\n… and {hidden} more (kept in the incident snapshot)"
+    if hidden > 0:
+        first_page += f"\n… and {hidden} more active in that window (saved in the incident snapshot)"
 
-        page_title = title if len(pages) == 1 else f"{title} ({index}/{len(pages)})"
-
-        try:
-            await channel.send(embed=embeds.info(page_title, text))
-        except discord.HTTPException:
-            log.exception("Could not send suspect page %s/%s", index, len(pages))
-            return
-
-        await asyncio.sleep(PAGE_PAUSE_SECONDS)
+    title = f"🟢 Active within 15 min before the alert (top {shown} of {len(lines)})"
+    return embeds.info(title, first_page)
 
 
 async def handle_espionage_check(cog, guild_id, config, member, our_alliance_id):
@@ -130,8 +127,8 @@ async def handle_espionage_check(cog, guild_id, config, member, our_alliance_id)
         "🕵️ Possible Espionage Loss",
         f"**{name}** lost spies: {last_spies} → {current_spies}.\n"
         f"**Change:** -{last_spies - current_spies} spies.\n"
-        "Candidates are nations in the spy range of the victim, ranked by how "
-        "recently they were active. This does not prove who performed the operation.",
+        "Candidates are nations in spy range, most recently active first. "
+        "This does not prove who did it.",
     )
 
     if report is None:
@@ -147,15 +144,24 @@ async def handle_espionage_check(cog, guild_id, config, member, our_alliance_id)
             inline=False,
         )
 
+    list_embed = _list_embed(report) if report is not None else None
+
     try:
-        await channel.send(content=ping or None, embed=header)
-    except discord.HTTPException:
-        # Keep the old baseline so the loss is retried next cycle.
-        log.exception(
-            "Espionage alert for nation %s could not be delivered; retrying next cycle",
-            nation_id,
+        await channel.send(
+            content=ping or None,
+            embeds=[header] + ([list_embed] if list_embed else []),
         )
-        return
+    except discord.HTTPException:
+        log.exception("Combined espionage alert failed for nation %s; trying header only", nation_id)
+        try:
+            await channel.send(content=ping or None, embeds=[header])
+        except discord.HTTPException:
+            # Keep the old baseline so the loss is retried next cycle.
+            log.exception(
+                "Espionage alert for nation %s could not be delivered; retrying next cycle",
+                nation_id,
+            )
+            return
 
     # The alert is out: move the baseline now so a later failure never re-alerts.
     await database.set_last_spies(guild_id, nation_id, current_spies)
@@ -174,16 +180,3 @@ async def handle_espionage_check(cog, guild_id, config, member, our_alliance_id)
         )
     except Exception as exc:
         log.warning("Could not save spy incident snapshot: %s", exc)
-
-    await _send_pages(
-        channel,
-        "🟢 Active within 15 min before the alert",
-        report.recent,
-        MAX_RECENT_LISTED,
-    )
-    await _send_pages(
-        channel,
-        "🟡 Active 15–60 min before the alert",
-        report.earlier,
-        MAX_EARLIER_LISTED,
-    )

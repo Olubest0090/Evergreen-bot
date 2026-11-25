@@ -101,6 +101,7 @@ class SuspectReport:
     no_activity_data: int = 0
     unreadable: int = 0
     treaty_alliance_ids: set = field(default_factory=set)
+    treaty_alliances: dict = field(default_factory=dict)  # alliance id -> name
     treaty_lookup_failed: bool = False
 
 
@@ -168,6 +169,7 @@ async def find_spy_suspect_report(pw_client, victim, detected_at=None):
         if active and other_id:
             excluded_alliances.add(int(other_id))
             report.treaty_alliance_ids.add(int(other_id))
+            report.treaty_alliances[int(other_id)] = treaty.get("other_alliance_name")
 
     # Must retrieve every pagination page.
     candidates = await pw_client.get_nations_in_score_range(
@@ -245,7 +247,6 @@ def format_suspect_line(nation) -> str:
     name = str(nation.get("nation_name") or "Unknown")
     name = name.replace("[", "(").replace("]", ")")
     alliance = (nation.get("alliance") or {}).get("name") or "None"
-    alliance_id = nation.get("alliance_id") or "None"
 
     try:
         score = f"{float(nation.get('score') or 0):,.0f}"
@@ -254,9 +255,7 @@ def format_suspect_line(nation) -> str:
 
     return (
         f"[{name}](https://politicsandwar.com/nation/id={nation.get('id')}) "
-        f"— *{alliance}* (`{alliance_id}`) "
-        f"— {score} score "
-        f"— {format_activity_age(nation.get('last_active'))}"
+        f"— *{alliance}* — {score} — {format_activity_age(nation.get('last_active'))}"
     )
 
 
