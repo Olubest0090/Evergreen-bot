@@ -46,6 +46,7 @@ INITIAL_COGS = (
     "cogs.sphere",
     "cogs.reminders",
     "cogs.tickets",
+    "cogs.audit",
 )
 
 
