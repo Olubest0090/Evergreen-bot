@@ -105,7 +105,7 @@ class SuspectReport:
     treaty_lookup_failed: bool = False
 
 
-async def find_spy_suspect_report(pw_client, victim, detected_at=None):
+async def find_spy_suspect_report(pw_client, victim, detected_at=None, extra_excluded=None):
     """
     Build a full, ranked report of nations that could have spied on `victim`.
 
@@ -170,6 +170,19 @@ async def find_spy_suspect_report(pw_client, victim, detected_at=None):
             excluded_alliances.add(int(other_id))
             report.treaty_alliance_ids.add(int(other_id))
             report.treaty_alliances[int(other_id)] = treaty.get("other_alliance_name")
+
+    # Friendly alliances from the server's own ALLIES / EXTENSION coalitions
+    # (alliance id -> name). The in-game treaty lookup can miss these.
+    for friend_id, friend_name in (extra_excluded or {}).items():
+        try:
+            friend_id = int(friend_id)
+        except (TypeError, ValueError):
+            continue
+        if friend_id == victim_alliance_id:
+            continue
+        excluded_alliances.add(friend_id)
+        report.treaty_alliance_ids.add(friend_id)
+        report.treaty_alliances.setdefault(friend_id, friend_name)
 
     # Must retrieve every pagination page.
     candidates = await pw_client.get_nations_in_score_range(

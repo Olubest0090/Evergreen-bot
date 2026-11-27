@@ -12,6 +12,7 @@ import discord
 
 from utils import database, embeds
 from utils.spy_incidents_db import save_spy_incident
+from utils.spy_friends import fetch_friendly_alliances
 from utils.spy_suspects import (
     chunk_lines,
     find_spy_suspect_report,
@@ -38,7 +39,7 @@ def _summary_text(report) -> str:
     if report.excluded_same_alliance:
         excluded.append(f"{report.excluded_same_alliance} same alliance")
     if report.excluded_treaty:
-        excluded.append(f"{report.excluded_treaty} treaty partners")
+        excluded.append(f"{report.excluded_treaty} treaty partners & allies")
     if report.no_activity_data:
         excluded.append(f"{report.no_activity_data} no activity data")
     if report.unreadable:
@@ -56,7 +57,7 @@ def _summary_text(report) -> str:
         shown = ", ".join(names[:10])
         if len(names) > 10:
             shown += f", +{len(names) - 10} more"
-        lines.append(f"**Treaty partners excluded:** {shown}")
+        lines.append(f"**Treaty partners & allies excluded:** {shown}")
     elif not report.treaty_lookup_failed:
         lines.append("**Treaty partners excluded:** none found")
 
@@ -114,10 +115,18 @@ async def handle_espionage_check(cog, guild_id, config, member, our_alliance_id)
     search_error = None
 
     try:
+        # The server's own ALLIES / EXTENSION lists can name friendly alliances
+        # that the in-game treaty lookup does not return.
+        try:
+            friends = await fetch_friendly_alliances(guild_id)
+        except Exception as exc:
+            friends = {}
+            log.warning("Could not load allies coalition for spy report: %s", exc)
         report = await find_spy_suspect_report(
             cog.bot.pw_client,
             member,
             detected_at,
+            extra_excluded=friends,
         )
     except Exception as exc:
         search_error = str(exc) or exc.__class__.__name__
