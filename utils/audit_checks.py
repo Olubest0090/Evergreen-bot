@@ -9,6 +9,7 @@ Military definitions (maximum an alliance member can field per city):
 """
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 
 IMPROVEMENT_TARGETS = {"barracks": 5, "factory": 5, "hangar": 5, "drydock": 3}
@@ -68,6 +69,44 @@ def improvement_gaps(nation: dict) -> dict[str, int]:
 
 def format_gaps(gaps: dict[str, int]) -> str:
     return ", ".join(f"{n}× {IMPROVEMENT_LABELS[b]}" for b, n in gaps.items())
+
+
+def improvement_progress(nation: dict) -> dict[str, float]:
+    """Average buildings per city for each improvement that is below target.
+
+    Rounded DOWN to 1 decimal so 4.97 never displays as the full 5.
+    {} = compliant.
+    """
+    cities = nation.get("cities") or []
+    if not cities:
+        return {}
+    out: dict[str, float] = {}
+    for building, target in IMPROVEMENT_TARGETS.items():
+        have = sum(min(target, int(c.get(building) or 0)) for c in cities)
+        if have < target * len(cities):
+            out[building] = math.floor(have / len(cities) * 10) / 10
+    return out
+
+
+def missing_share(nation: dict) -> float:
+    """Fraction (0..1) of all target buildings that are missing; used to sort worst-first."""
+    cities = len(nation.get("cities") or [])
+    if not cities:
+        return 0.0
+    total = cities * sum(IMPROVEMENT_TARGETS.values())
+    return sum(improvement_gaps(nation).values()) / total
+
+
+def _num(x: float) -> str:
+    return str(int(x)) if x == int(x) else f"{x:.1f}"
+
+
+def format_progress(nation: dict) -> str:
+    """'Barracks 0/5 · Factory 2.5/5' — average per city against the target."""
+    prog = improvement_progress(nation)
+    return " · ".join(
+        f"{IMPROVEMENT_LABELS[b]} {_num(v)}/{IMPROVEMENT_TARGETS[b]}" for b, v in prog.items()
+    )
 
 
 def military_status(nation: dict) -> dict:

@@ -29,6 +29,23 @@ def test_gaps_summed_over_cities():
     assert c.format_gaps(c.improvement_gaps(n)) == "2× Barracks, 1× Hangar"
 
 
+def test_progress_is_average_per_city_and_floored():
+    cities = [{"barracks": 0, "factory": 5, "hangar": 5, "drydock": 3}] * 41 + [FULL_CITY]
+    n = nation(cities)
+    assert c.improvement_progress(n) == {"barracks": 0.1}
+    assert c.format_progress(n) == "Barracks 0.1/5"
+    half = nation([{"barracks": 5, "factory": 2, "hangar": 5, "drydock": 0}] * 2)
+    assert c.format_progress(half) == "Factory 2/5 · Drydock 0/3"
+    assert c.improvement_progress(nation([FULL_CITY])) == {}
+
+
+def test_missing_share_orders_worst_first():
+    bad = nation([{"barracks": 0, "factory": 0, "hangar": 0, "drydock": 0}])
+    ok = nation([{"barracks": 4, "factory": 5, "hangar": 5, "drydock": 3}] * 10)
+    assert c.missing_share(bad) == 1.0
+    assert c.missing_share(bad) > c.missing_share(ok) > 0
+
+
 def test_partial_military_floors_percent():
     n = nation([FULL_CITY], soldiers=14999, tanks=1250, aircraft=75, ships=15)
     st = c.military_status(n)

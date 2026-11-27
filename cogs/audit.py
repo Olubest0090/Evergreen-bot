@@ -64,16 +64,16 @@ def _paged(title: str, intro: str, lines: list[str], ok_title: str, ok_text: str
 
 
 def improvement_embeds(members: list[dict]) -> list[discord.Embed]:
-    rows = []
-    for n in members:
-        gaps = checks.improvement_gaps(n)
-        if gaps:
-            rows.append((sum(gaps.values()), n, gaps))
+    rows = [(checks.missing_share(n), n) for n in members if checks.improvement_gaps(n)]
     rows.sort(key=lambda r: -r[0])
-    lines = [f"{checks.nation_link(n)} — {checks.format_gaps(g)}" for _, n, g in rows]
+    lines = []
+    for _, n in rows:
+        cities = len(n.get("cities") or [])
+        lines.append(f"{checks.nation_link(n)} ({cities} cities) — {checks.format_progress(n)}")
     return _paged(
         f"Missing Military Improvements ({len(rows)})",
-        "Target per city: 5 Barracks, 5 Factories, 5 Hangars, 3 Drydocks.",
+        "Average per city vs target. Target: 5 Barracks · 5 Factory · 5 Hangar · 3 Drydock. "
+        "Worst first; only buildings below target are listed.",
         lines,
         "Military Improvements Complete",
         "Every audited member has the full military improvements in all cities.",
