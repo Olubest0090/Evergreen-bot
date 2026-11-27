@@ -12,7 +12,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from utils import database, embeds
-from cogs.counter import qualifies, military_total
+from cogs.counter import qualifies, military_total, rank_counter_candidates
 from utils.formatting import format_duration, military_line, nation_block
 from utils.spy_suspects import find_possible_spy_suspects
 from utils.spy_alerts import handle_espionage_check
@@ -374,70 +374,122 @@ class Alerts(commands.Cog):
         return True
 
     async def _dispatch_counter_requests(self, guild_id, config, war):
+        """DM the strongest eligible counters (same ranking as /counter nation)
+        and tell MA who was reached. Keeps going down the ranked list until
+        MAX_COUNTER_DMS members have actually received a DM."""
         attacker = war.get("attacker") or {}
         defender = war.get("defender") or {}
         members = self._members_by_guild.get(int(guild_id), [])
 
-        candidates = [
-            m for m in members
-            if m.get("id") != defender.get("id") and qualifies(m, attacker)
-        ]
-        candidates.sort(key=military_total, reverse=True)
-        candidates = candidates[:MAX_COUNTER_DMS]
+        ranked = rank_counter_candidates(members, attacker, exclude_id=defender.get("id"))
 
         war_link = f"https://politicsandwar.com/nation/war/timeline/war={war['id']}"
         att_name = attacker.get("nation_name", "Unknown")
+        att_link = f"https://politicsandwar.com/nation/id={attacker.get('id')}"
         att_alliance = (attacker.get("alliance") or {}).get("name", "None")
 
-        unlinked = []
-        sent = 0
-        for m in candidates:
+        reached = []     # (member dict, discord id)
+        unreached = []   # readable reasons, in ranking order
+        for m in ranked:
+            if len(reached) >= MAX_COUNTER_DMS:
+                break
+            name = m.get("nation_name", "Unknown")
             discord_id = await database.get_discord_id_for_nation(m["id"])
             if not discord_id:
-                unlinked.append(m.get("nation_name", "Unknown"))
+                unreached.append(f"{name} (no linked Discord)")
                 continue
-
             try:
                 member_obj = self.bot.get_user(discord_id) or await self.bot.fetch_user(discord_id)
             except discord.HTTPException:
                 member_obj = None
             if not member_obj:
-                unlinked.append(m.get("nation_name", "Unknown"))
+                unreached.append(f"{name} (Discord user not found)")
                 continue
 
             embed = embeds.warning("🎯 Counter Request")
             embed.description = (
                 f"**{defender.get('nation_name', 'Unknown')}** is under attack by "
-                f"[{att_name}](https://politicsandwar.com/nation/id={attacker.get('id')}) ({att_alliance}).\n\n"
-                f"You've been picked because your military meets or beats theirs and you have a free offensive slot.\n\n"
+                f"[{att_name}]({att_link}) ({att_alliance}).\n\n"
+                f"You're one of our strongest members in range of them with a free offensive slot.\n\n"
                 f"**Enemy:**\n"
                 f"`{attacker.get('soldiers', 0):,} 💂 | {attacker.get('tanks', 0):,} ⚙️ | "
                 f"{attacker.get('aircraft', 0):,} ✈️ | {attacker.get('ships', 0):,} 🚢`\n\n"
                 f"**War reason:** Evergreen Counter\n\n"
                 f"If you can declare on them, please do. If not, let MA know so someone else gets asked.\n\n"
+                f"Enemy: [{att_name}]({att_link})\n"
                 f"War link: [Click here]({war_link})"
             )
             try:
                 await member_obj.send(embed=embed)
-                sent += 1
             except (discord.Forbidden, discord.HTTPException):
-                unlinked.append(f"{m.get('nation_name', 'Unknown')} (DMs closed)")
+                unreached.append(f"{name} (DMs closed)")
+                continue
+            reached.append((m, discord_id))
 
-        if unlinked:
-            channel_id = config.get("ma_notify_channel_id") or config.get("defense_channel_id")
-            channel = self.bot.get_channel(channel_id) if channel_id else None
-            if channel:
-                ma_role_id = await database.get_guild_role(guild_id, "MA")
-                ping = f"<@&{ma_role_id}> " if ma_role_id else ""
-                lines = "\n".join(f"- {n}" for n in unlinked)
-                await channel.send(
-                    content=ping,
-                    embed=embeds.warning(
-                        "Could Not DM These Qualifying Counters",
-                        f"{lines}\n\nThese members qualify to counter **{att_name}** but have no linked "
-                        f"Discord (or DMs closed). DMed **{sent}** others successfully.",
-                    ),
+        await self._post_counter_notice(guild_id, config, war, ranked, reached, unreached)
+
+    async def _post_counter_notice(self, guild_id, config, war, ranked, reached, unreached):
+        """Tell MA what happened with the counter DMs for this war."""
+        channel_id = config.get("ma_notify_channel_id") or config.get("defense_channel_id")
+        channel = await self._get_channel(channel_id) if channel_id else None
+        if not channel:
+            return
+
+        attacker = war.get("attacker") or {}
+        defender = war.get("defender") or {}
+        att_name = attacker.get("nation_name", "Unknown")
+        att_link = f"https://politicsandwar.com/nation/id={attacker.get('id')}"
+        war_link = f"https://politicsandwar.com/nation/war/timeline/war={war['id']}"
+        ma_role_id = await database.get_guild_role(guild_id, "MA")
+        ping = f"<@&{ma_role_id}>" if ma_role_id else None
+
+        header = (
+            f"**{defender.get('nation_name', 'Unknown')}** was attacked by "
+            f"[{att_name}]({att_link}) — [war link]({war_link})\n\n"
+        )
+
+        def listed(items, limit=10):
+            lines = [f"- {x}" for x in items[:limit]]
+            if len(items) > limit:
+                lines.append(f"- …and {len(items) - limit} more")
+            return "\n".join(lines)
+
+        if not ranked:
+            embed = embeds.warning(
+                "No Qualifying Counters",
+                header + "No member is in range with a free offensive slot and activity in the last "
+                "7 days. MA needs to find a counter manually.",
+            )
+            content = ping
+        elif not reached:
+            embed = embeds.warning(
+                "No Counters Reached",
+                header + f"{len(ranked)} member(s) qualified but none could be DMed:\n"
+                + listed(unreached),
+            )
+            content = ping
+        else:
+            lines = []
+            for m, discord_id in reached:
+                url = f"https://politicsandwar.com/nation/id={m.get('id')}"
+                lines.append(
+                    f"✅ [{m.get('nation_name', 'Unknown')}]({url}) (<@{discord_id}>) — DM sent successfully"
                 )
+            body = header + f"**DM sent successfully to {len(reached)} counter(s):**\n" + "\n".join(lines)
+            if len(reached) < MAX_COUNTER_DMS:
+                body += f"\n\nOnly {len(reached)} of {MAX_COUNTER_DMS} could be reached."
+            if unreached:
+                body += "\n\n**Could not reach:**\n" + listed(unreached)
+                embed = embeds.warning("Counter DMs Sent (some not reached)", body)
+                content = ping
+            else:
+                embed = embeds.success("Counter DMs Sent", body)
+                content = None
+
+        try:
+            await channel.send(content=content, embed=embed)
+        except discord.HTTPException as e:
+            print(f"[alerts] could not post counter notice for guild {guild_id}: {e}")
 
     async def _handle_espionage_check(self, guild_id, config, member, our_alliance_id):
         await handle_espionage_check(self, guild_id, config, member, our_alliance_id)

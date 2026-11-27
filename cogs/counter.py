@@ -90,6 +90,19 @@ def list_candidates(candidate: dict, enemy: dict) -> bool:
     return True
 
 
+def rank_counter_candidates(members: list, enemy: dict, exclude_id=None) -> list:
+    """Everyone the /counter nation command would list for this enemy, strongest
+    first. Used by the automatic counter DMs so both always agree."""
+    ranked = [
+        m for m in members
+        if m.get("id") != enemy.get("id")
+        and m.get("id") != exclude_id
+        and list_candidates(m, enemy)
+    ]
+    ranked.sort(key=military_total, reverse=True)
+    return ranked
+
+
 class Counter(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
