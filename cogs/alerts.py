@@ -381,7 +381,12 @@ class Alerts(commands.Cog):
         defender = war.get("defender") or {}
         members = self._members_by_guild.get(int(guild_id), [])
 
-        ranked = rank_counter_candidates(members, attacker, exclude_id=defender.get("id"))
+        # War alert data carries no nation score, which the range check needs.
+        enemy = await self._attacker_with_score(attacker)
+        ranked = (
+            rank_counter_candidates(members, enemy, exclude_id=defender.get("id"))
+            if enemy else None
+        )
 
         war_link = f"https://politicsandwar.com/nation/war/timeline/war={war['id']}"
         att_name = attacker.get("nation_name", "Unknown")
@@ -390,7 +395,7 @@ class Alerts(commands.Cog):
 
         reached = []     # (member dict, discord id)
         unreached = []   # readable reasons, in ranking order
-        for m in ranked:
+        for m in (ranked or []):
             if len(reached) >= MAX_COUNTER_DMS:
                 break
             name = m.get("nation_name", "Unknown")
@@ -428,6 +433,24 @@ class Alerts(commands.Cog):
 
         await self._post_counter_notice(guild_id, config, war, ranked, reached, unreached)
 
+    async def _attacker_with_score(self, attacker):
+        """Return the attacker dict with a 'score', looked up if missing (one
+        tiny API call). None if the score can't be read."""
+        if attacker.get("score"):
+            return attacker
+        try:
+            data = await self.bot.pw_client._query(
+                "query($id: [Int]) { nations(id: $id, first: 1) { data { id score } } }",
+                {"id": [int(attacker["id"])]},
+            )
+            rows = data["nations"]["data"]
+        except Exception as e:
+            print(f"[alerts] could not read enemy score for counter check: {e}")
+            return None
+        if not rows or not rows[0].get("score"):
+            return None
+        return {**attacker, "score": rows[0]["score"]}
+
     async def _post_counter_notice(self, guild_id, config, war, ranked, reached, unreached):
         """Tell MA what happened with the counter DMs for this war."""
         channel_id = config.get("ma_notify_channel_id") or config.get("defense_channel_id")
@@ -454,7 +477,14 @@ class Alerts(commands.Cog):
                 lines.append(f"- …and {len(items) - limit} more")
             return "\n".join(lines)
 
-        if not ranked:
+        if ranked is None:
+            embed = embeds.warning(
+                "Counter Check Failed",
+                header + "Could not read the enemy's score, so counters could not be checked. "
+                "MA needs to find a counter manually.",
+            )
+            content = ping
+        elif not ranked:
             embed = embeds.warning(
                 "No Qualifying Counters",
                 header + "No member is in range with a free offensive slot and activity in the last "

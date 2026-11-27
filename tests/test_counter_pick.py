@@ -112,9 +112,22 @@ class FakeChannel:
         self.posts.append((content, embed))
 
 
+class FakePW:
+    """Stands in for utils.pw_api.PWApiClient._query (score lookup)."""
+
+    def __init__(self, fails=False):
+        self.fails = fails
+
+    async def _query(self, query, variables=None):
+        if self.fails:
+            raise RuntimeError("P&W API down")
+        return {"nations": {"data": [{"id": variables["id"][0], "score": ENEMY["score"]}]}}
+
+
 class FakeBot:
-    def __init__(self, users):
+    def __init__(self, users, lookup_fails=False):
         self.users, self.channel = users, FakeChannel()
+        self.pw_client = FakePW(fails=lookup_fails)
 
     def get_user(self, uid):
         return self.users.get(uid)
@@ -126,7 +139,10 @@ class FakeBot:
         return self.channel
 
 
-def run_flow(members, links, closed_dm_ids=()):
+ATTACKER_FROM_WAR = {k: v for k, v in ENEMY.items() if k != "score"}  # real alert data has no score
+
+
+def run_flow(members, links, closed_dm_ids=(), lookup_fails=False):
     """links: nation_id -> discord_id (missing = unlinked)."""
     users = {d: FakeUser(closed=(n in closed_dm_ids)) for n, d in links.items()}
 
@@ -140,9 +156,9 @@ def run_flow(members, links, closed_dm_ids=()):
     database.get_guild_role = get_guild_role
 
     cog = alerts_mod.Alerts.__new__(alerts_mod.Alerts)
-    cog.bot = FakeBot(users)
+    cog.bot = FakeBot(users, lookup_fails=lookup_fails)
     cog._members_by_guild = {1: members}
-    war = {"id": 77, "attacker": ENEMY, "defender": member(6, soldiers=1)}
+    war = {"id": 77, "attacker": dict(ATTACKER_FROM_WAR), "defender": member(6, soldiers=1)}
     asyncio.run(cog._dispatch_counter_requests(1, {"ma_notify_channel_id": 5}, war))
     return users, cog.bot.channel.posts
 
@@ -188,6 +204,22 @@ def test_qualified_but_nobody_reachable_pings_ma():
     content, embed = posts[0]
     assert content == "<@&999>" and embed.title == "No Counters Reached"
     assert "M10 (no linked Discord)" in embed.description
+
+
+def test_enemy_score_is_looked_up_when_war_data_has_none():
+    """Regression: war alert data has no score, which used to make everyone 'out of range'."""
+    members = [member(10), member(11)]
+    users, posts = run_flow(members, {10: 5010, 11: 5011})
+    assert users[5010].sent and users[5011].sent
+    assert posts[0][1].kind == "success"
+
+
+def test_score_lookup_failure_says_so_instead_of_claiming_nobody_qualifies():
+    users, posts = run_flow([member(10)], {10: 5010}, lookup_fails=True)
+    content, embed = posts[0]
+    assert content == "<@&999>"
+    assert embed.title == "Counter Check Failed"
+    assert not users[5010].sent
 
 
 if __name__ == "__main__":
