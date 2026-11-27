@@ -68,13 +68,17 @@ class EvergreenBot(commands.Bot):
             await self.load_extension("cogs.cleanup_timer")
         except Exception:
             log.exception("cleanup_timer failed to load")
-        if TEST_GUILD:
+if TEST_GUILD:
+            # Put all app commands on this guild only
             self.tree.copy_global_to(guild=TEST_GUILD)
             await self.tree.sync(guild=TEST_GUILD)
-            log.info("Synced commands to guild %s (instant)", GUILD_ID)
+            # Clear GLOBAL copies so Discord stops showing duplicates
+            self.tree.clear_commands(guild=None)
+            await self.tree.sync()  # empty global sync
+            log.info("Synced guild-only commands to %s; cleared global duplicates", GUILD_ID)
         else:
             await self.tree.sync()
-            log.info("Synced commands globally (can take up to ~1 hour to appear)")
+            log.info("Synced commands globally")
         asyncio.create_task(self._start_webserver())
 
     async def _start_webserver(self) -> None:
