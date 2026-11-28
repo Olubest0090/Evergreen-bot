@@ -11,7 +11,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from utils import database, embeds
+from utils import counter_dm_db, database, embeds
 from cogs.counter import qualifies, military_total, rank_counter_candidates
 from utils.formatting import format_duration, military_line, nation_block
 from utils.spy_suspects import find_possible_spy_suspects
@@ -124,6 +124,112 @@ class Alerts(commands.Cog):
                 f"Automatic counter-request DMs are now **{status}**.",
             )
         )
+
+    @alerts_group.command(
+        name="retractcounter",
+        description="Counter request was an error: tell members not to declare, or make peace if they did",
+    )
+    @app_commands.describe(
+        war_id="The war the counter request was for (the number after war= in the war link)",
+        nations="Optional: nation names to notify, separated by commas (for DMs the bot did not log)",
+    )
+    async def retract_counter(
+        self,
+        interaction: discord.Interaction,
+        war_id: int,
+        nations: str | None = None,
+    ):
+        await interaction.response.defer()
+        guild_id = interaction.guild_id
+        recipients: dict = {}  # discord id -> (nation name, log row id or None)
+        problems: list = []
+
+        try:
+            for row in await counter_dm_db.list_unretracted(guild_id, war_id):
+                recipients[int(row["discord_id"])] = (
+                    row.get("nation_name") or f"Nation {row.get('nation_id')}",
+                    row.get("id"),
+                )
+        except Exception as e:
+            problems.append(f"Could not read the DM log ({str(e)[:80]})")
+
+        for raw in (nations or "").split(","):
+            name = raw.strip()
+            if not name:
+                continue
+            try:
+                nation = await self.bot.pw_client.get_nation_by_name(name)
+            except Exception:
+                nation = None
+            if not nation:
+                problems.append(f"{name} (nation not found)")
+                continue
+            discord_id = await database.get_discord_id_for_nation(nation["id"])
+            if not discord_id:
+                problems.append(f"{nation.get('nation_name', name)} (no linked Discord)")
+                continue
+            recipients.setdefault(int(discord_id), (nation.get("nation_name", name), None))
+
+        if not recipients:
+            text = f"No counter DMs are logged for war `{war_id}`. Add names with the `nations` option."
+            if problems:
+                text += "\n\n**Problems:**\n" + "\n".join(f"- {p}" for p in problems)
+            await interaction.followup.send(embed=embeds.error("Nobody To Notify", text))
+            return
+
+        war = None
+        try:
+            war = await self.bot.pw_client.get_war(war_id)
+        except Exception:
+            pass
+        attacker = (war or {}).get("attacker") or {}
+        defender = (war or {}).get("defender") or {}
+        att_name = attacker.get("nation_name")
+        war_link = f"https://politicsandwar.com/nation/war/timeline/war={war_id}"
+        if att_name:
+            att_link = f"https://politicsandwar.com/nation/id={attacker.get('id')}"
+            about = (
+                f"The counter request I sent you for **{defender.get('nation_name', 'a member')}** vs "
+                f"[{att_name}]({att_link}) was **sent in error**. That war is a counter-attack and one "
+                f"of our members is already fighting {att_name}."
+            )
+        else:
+            about = (
+                "The counter request I sent you was **sent in error**. That war is a counter-attack "
+                "and one of our members is already fighting the attacker."
+            )
+        description = (
+            f"{about}\n\n"
+            "**Do not declare on them.**\n"
+            "**If you have already declared, request peace immediately.**\n\n"
+            f"War link: [Click here]({war_link})"
+        )
+
+        sent, failed, done_rows = [], [], []
+        for discord_id, (nation_name, row_id) in recipients.items():
+            try:
+                user = self.bot.get_user(discord_id) or await self.bot.fetch_user(discord_id)
+                await user.send(embed=embeds.error("⛔ Counter Request Cancelled", description))
+            except (discord.Forbidden, discord.HTTPException):
+                failed.append(f"{nation_name} (<@{discord_id}>) — DMs closed or user not found")
+                continue
+            sent.append(f"✅ {nation_name} (<@{discord_id}>) — correction DM sent")
+            if row_id:
+                done_rows.append(row_id)
+
+        if done_rows:
+            try:
+                await counter_dm_db.mark_retracted(done_rows)
+            except Exception as e:
+                print(f"[alerts] could not mark counter DMs retracted for war {war_id}: {e}")
+
+        body = f"War `{war_id}`: **{len(sent)}** member(s) told to stand down.\n\n" + "\n".join(sent)
+        if failed:
+            body += "\n\n**Could not reach:**\n" + "\n".join(f"- {f}" for f in failed)
+        if problems:
+            body += "\n\n**Problems:**\n" + "\n".join(f"- {p}" for p in problems)
+        make = embeds.warning if (failed or problems) else embeds.success
+        await interaction.followup.send(embed=make("Counter Request Cancelled", body))
 
     @alerts_group.command(name="list", description="Show current alert configuration")
     async def list_config(self, interaction: discord.Interaction):
@@ -282,7 +388,9 @@ class Alerts(commands.Cog):
             if not sent:
                 return  # channel unreachable this cycle, retry next time instead of marking as done
             await database.mark_war_alerted(guild_id, war_id, "alerted_defense")
-            if config.get("auto_counter_enabled", True):
+            # A counter-attack is already being fought by one of our members, so
+            # asking more members to counter it would be an error: no DMs.
+            if config.get("auto_counter_enabled", True) and not is_counter:
                 await self._dispatch_counter_requests(guild_id, config, war)
 
         elif side == "offense":
@@ -430,6 +538,10 @@ class Alerts(commands.Cog):
                 unreached.append(f"{name} (DMs closed)")
                 continue
             reached.append((m, discord_id))
+            try:
+                await counter_dm_db.log_sent(guild_id, war["id"], m["id"], name, discord_id)
+            except Exception as e:
+                print(f"[alerts] could not log counter DM for war {war['id']}: {e}")
 
         await self._post_counter_notice(guild_id, config, war, ranked, reached, unreached)
 
