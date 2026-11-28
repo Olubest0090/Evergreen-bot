@@ -81,6 +81,9 @@ def list_candidates(candidate: dict, enemy: dict) -> bool:
     """Broader version for the /counter nation command: in range, has a
     free slot, and active. No military-strength requirement, results
     are sorted by strength instead so the viewer judges for themself."""
+    # Applicants are not full members yet: never list them or ask them to counter.
+    if str(candidate.get("alliance_position") or "").upper() == "APPLICANT":
+        return False
     if not in_range(candidate, enemy):
         return False
     if free_offensive_slots(candidate) <= 0:
