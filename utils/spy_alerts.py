@@ -12,6 +12,11 @@ import discord
 
 from utils import database, embeds
 from utils.spy_incidents_db import save_spy_incident
+from utils.spy_history import (
+    MAX_LINES,
+    fetch_previous_incidents,
+    find_repeat_suspects,
+)
 from utils.spy_friends import fetch_friendly_alliances
 from utils.spy_suspects import (
     chunk_lines,
@@ -85,6 +90,46 @@ def _list_embed(report):
 
     title = f"🟢 Active within 15 min before the alert (top {shown} of {len(lines)})"
     return embeds.info(title, first_page)
+
+
+def _repeat_lines(items) -> str:
+    lines = [format_suspect_line(n) for n in items[:MAX_LINES]]
+    if len(items) > MAX_LINES:
+        lines.append(f"… and {len(items) - MAX_LINES} more")
+    return "\n".join(lines)
+
+
+def _repeat_embed(victim_name: str, repeat: dict):
+    """Nations from this alert that also appeared in the member's earlier reports."""
+    n = repeat["compared"]
+    if n == 0:
+        return embeds.info(
+            "🔁 Repeat suspects",
+            f"No earlier spy reports for **{victim_name}** to compare with yet.",
+        )
+    scope = "last report" if n == 1 else f"last {n} reports"
+    both = "the earlier report" if n == 1 else "both earlier reports"
+    parts = []
+    if repeat["all"]:
+        parts.append(
+            f"**In this alert and {both}** ({len(repeat['all'])}):\n"
+            + _repeat_lines(repeat["all"])
+        )
+    if repeat["some"]:
+        some = [nation for nation, _ in repeat["some"]]
+        parts.append(
+            f"**In this alert and one earlier report** ({len(some)}):\n" + _repeat_lines(some)
+        )
+    if not parts:
+        return embeds.info(
+            "🔁 Repeat suspects",
+            f"No nation active before this alert also appeared in **{victim_name}**'s {scope}.",
+        )
+    intro = (
+        f"Nations active within 15 min before this alert that also appeared in "
+        f"**{victim_name}**'s {scope}. A repeat is a lead, not proof."
+    )
+    return embeds.info("🔁 Repeat suspects", (intro + "\n\n" + "\n\n".join(parts))[:4000])
 
 
 async def handle_espionage_check(cog, guild_id, config, member, our_alliance_id):
@@ -177,6 +222,14 @@ async def handle_espionage_check(cog, guild_id, config, member, our_alliance_id)
 
     if report is None:
         return
+
+    # Repeat suspects: separate message, best effort, never blocks the alert.
+    # Runs before the snapshot below, so "earlier reports" never include this one.
+    try:
+        previous = await fetch_previous_incidents(guild_id, nation_id)
+        await channel.send(embed=_repeat_embed(name, find_repeat_suspects(report, previous)))
+    except Exception as exc:
+        log.warning("Repeat-suspect message failed for nation %s: %s", nation_id, exc)
 
     # Incident snapshot: best effort, never blocks the alert.
     try:
